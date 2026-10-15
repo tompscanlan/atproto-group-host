@@ -9,78 +9,11 @@
 // Run from spike/:
 //   DEVNET_LEAF_FILE=/workspaces/scratch/atproto-devnet/data/https/leaf.crt \
 //     /workspaces/scratch/atproto-devnet/scripts/https-run node probe-day5-3.mjs > run-day5-3.log 2>&1
-import http from 'node:http'
-import { createRequire } from 'node:module'
-import { OAuthClient, MemoryStore } from '@atcute/oauth-node-client'
-import {
-  CompositeDidDocumentResolver,
-  LocalActorResolver,
-  PlcDidDocumentResolver,
-  WebDidDocumentResolver,
-  WellKnownHandleResolver,
-} from '@atcute/identity-resolver'
-import { ALPHA, bob, log, now, state, summary, verdict } from './lib.mjs'
-
-const { launchBrowser } = await import(process.env.DEVNET_BROWSER ?? '/workspaces/scratch/wt-atproto-permissioned-data-ewnj3/sandbox/opensocial/devnet-browser.mjs')
-const require = createRequire(import.meta.url)
-const { chromium } = require('/home/node/.local/share/mise/installs/npm-playwright/1.63.0/node_modules/playwright')
+import { ALPHA, bob, log, now, ownOAuth, state, summary, verdict } from './lib.mjs'
 
 // Day 4's group of record; bob held no request or membership there when day 4 ended.
 const GROUP = process.env.GROUP ?? 'did:plc:66pgsrgfxpd66hpqpneupgo4'
 const MEMBER_RPC = ['requestJoin', 'cancelJoinRequest', 'leaveGroup'].map((m) => `rpc:group.opensocial.${m}?aud=*`)
-
-const actorResolver = new LocalActorResolver({
-  handleResolver: new WellKnownHandleResolver(),
-  didDocumentResolver: new CompositeDidDocumentResolver({ methods: { plc: new PlcDidDocumentResolver(), web: new WebDidDocumentResolver() } }),
-})
-const CB_PORT = 39419
-const REDIRECT = `http://127.0.0.1:${CB_PORT}/cb`
-
-// The person's own sign-in at their own PDS: no host in the path.
-async function ownOAuth(person, scopes) {
-  const app = new OAuthClient({
-    metadata: { redirect_uris: [REDIRECT], scope: scopes.join(' ') },
-    actorResolver,
-    stores: { sessions: new MemoryStore(), states: new MemoryStore({ ttl: 600_000 }) },
-  })
-  const { url } = await app.authorize({ target: { type: 'account', identifier: person.handle }, scope: scopes.join(' ') })
-  log(`- ${now()} PAR at ${url.origin} for ${person.who}, scope: ${scopes.join(' ')}`)
-  let cbUrl = null
-  const server = http.createServer((rq, rs) => {
-    cbUrl = `http://127.0.0.1:${CB_PORT}${rq.url}`
-    rs.end('ok')
-  })
-  await new Promise((r) => server.listen(CB_PORT, '127.0.0.1', r))
-  const browser = await launchBrowser(chromium)
-  try {
-    const p = await (await browser.newContext()).newPage()
-    await p.goto(url.toString(), { waitUntil: 'load', timeout: 60000 })
-    await p.waitForSelector('input[name=password]', { timeout: 30000 })
-    const user = p.locator('input[name=username]')
-    if ((await user.count()) && (await user.isEditable()) && !(await user.inputValue())) await user.fill(person.handle)
-    await p.fill('input[name=password]', person.password)
-    await p.getByRole('button', { name: 'Sign in' }).click()
-    for (let i = 0; i < 120 && !cbUrl; i++) {
-      const btn = p.getByRole('button', { name: /^(accept|authorize|allow)/i }).first()
-      if (await btn.isVisible().catch(() => false)) {
-        const text = (await p.locator('body').innerText().catch(() => '')).replace(/\s+/g, ' ')
-        log(`- ${now()} consent at ${new URL(p.url()).origin}: ${text.slice(0, 400)}`)
-        await btn.click()
-        await p.waitForTimeout(1500)
-        continue
-      }
-      await p.waitForTimeout(500)
-    }
-    if (!cbUrl) throw new Error(`no callback for ${person.who}`)
-    const { session } = await app.callback(new URL(cbUrl).searchParams)
-    const { scope } = await session.getTokenInfo(false)
-    log(`- ${now()} ${person.who} signed in at ${ALPHA}; granted: ${scope}`)
-    return { session, scope }
-  } finally {
-    await browser.close()
-    await new Promise((r) => server.close(r))
-  }
-}
 
 // A member method, sent to the person's own PDS for the group's host.
 async function viaOwnPds(session, name) {

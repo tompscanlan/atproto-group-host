@@ -149,6 +149,56 @@ export async function groupSignIn(person, { create, groupDid, label: shot, scope
   }
 }
 
+const OWN_CB_PORT = 39419
+const OWN_REDIRECT = `http://127.0.0.1:${OWN_CB_PORT}/cb`
+
+// The person's own sign-in at their own PDS, with OAuth as an app signs them in: no host in
+// the path. Returns the session and the scope their PDS granted.
+export async function ownOAuth(person, scopes) {
+  const app = new OAuthClient({
+    metadata: { redirect_uris: [OWN_REDIRECT], scope: scopes.join(' ') },
+    actorResolver,
+    stores: { sessions: new MemoryStore(), states: new MemoryStore({ ttl: 600_000 }) },
+  })
+  const { url } = await app.authorize({ target: { type: 'account', identifier: person.handle }, scope: scopes.join(' ') })
+  log(`- ${now()} PAR at ${url.origin} for ${person.who}, scope: ${scopes.join(' ')}`)
+  let cbUrl = null
+  const server = http.createServer((rq, rs) => {
+    cbUrl = `http://127.0.0.1:${OWN_CB_PORT}${rq.url}`
+    rs.end('ok')
+  })
+  await new Promise((r) => server.listen(OWN_CB_PORT, '127.0.0.1', r))
+  const browser = await launchBrowser(chromium)
+  try {
+    const p = await (await browser.newContext()).newPage()
+    await p.goto(url.toString(), { waitUntil: 'load', timeout: 60000 })
+    await p.waitForSelector('input[name=password]', { timeout: 30000 })
+    const user = p.locator('input[name=username]')
+    if ((await user.count()) && (await user.isEditable()) && !(await user.inputValue())) await user.fill(person.handle)
+    await p.fill('input[name=password]', person.password)
+    await p.getByRole('button', { name: 'Sign in' }).click()
+    for (let i = 0; i < 120 && !cbUrl; i++) {
+      const btn = p.getByRole('button', { name: /^(accept|authorize|allow)/i }).first()
+      if (await btn.isVisible().catch(() => false)) {
+        const text = (await p.locator('body').innerText().catch(() => '')).replace(/\s+/g, ' ')
+        log(`- ${now()} consent at ${new URL(p.url()).origin}: ${text.slice(0, 400)}`)
+        await btn.click()
+        await p.waitForTimeout(1500)
+        continue
+      }
+      await p.waitForTimeout(500)
+    }
+    if (!cbUrl) throw new Error(`no callback for ${person.who}`)
+    const { session } = await app.callback(new URL(cbUrl).searchParams)
+    const { scope } = await session.getTokenInfo(false)
+    log(`- ${now()} ${person.who} signed in at ${ALPHA}; granted: ${scope}`)
+    return { session, scope }
+  } finally {
+    await browser.close()
+    await new Promise((r) => server.close(r))
+  }
+}
+
 // A call through an app's OAuth session for the group.
 export async function as(session, who, method, nsid, { params, body } = {}) {
   const qs = params ? `?${new URLSearchParams(params)}` : ''
