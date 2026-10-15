@@ -28,7 +28,7 @@ import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import { PDS, envToCfg, envToSecrets, readEnv } from '/app/packages/pds/dist/index.js'
 import { verifyJwt } from '/app/packages/xrpc-server/dist/auth.js'
-import { SpacePermission, isAtprotoOauthScope } from '/app/packages/oauth/oauth-scopes/dist/index.js'
+import { BlobPermission, RepoPermission, SpacePermission, isAtprotoOauthScope } from '/app/packages/oauth/oauth-scopes/dist/index.js'
 import { TID } from '/app/packages/common-web/dist/index.js'
 import { SpaceRef, isValidNsid, isValidRecordKey } from '/app/packages/syntax/dist/index.js'
 import { OAuthClient, MemoryStore } from '@atcute/oauth-node-client'
@@ -172,6 +172,8 @@ async function grantsFor(groupDid, personDid) {
   }
   const strings = new Set()
   const spaces = []
+  const repos = [] // repo: and blob: grants come from `permissions` only: pinToSpace drops them
+  const blobs = []
   const bySpace = new Map() // space uri -> the access-record grants pinned to it
   for (const { scope, space } of raw) {
     let parts
@@ -188,15 +190,29 @@ async function grantsFor(groupDid, personDid) {
       const sp = SpacePermission.fromString(s)
       if (sp) spaces.push(sp)
       if (sp && space) bySpace.set(space.uri, [...(bySpace.get(space.uri) ?? []), sp])
+      const rp = RepoPermission.fromString(s)
+      if (rp) repos.push(rp)
+      const bp = BlobPermission.fromString(s)
+      if (bp) blobs.push(bp)
     }
   }
-  return { roles, assignable: [...assignable], strings, spaces, bySpace }
+  return { roles, assignable: [...assignable], strings, spaces, repos, blobs, bySpace }
 }
 
-// Whether one expanded scope is wholly inside what the grants allow. Space scopes are split into
-// single operations and each must match some grant; other scopes must be granted as written.
+// Whether a granted blob accept (`*/*`, `image/*`, `image/png`) takes in a requested one.
+const acceptCovers = (granted, asked) =>
+  granted === '*/*' || granted === asked || (granted.endsWith('/*') && asked.startsWith(granted.slice(0, -1)))
+
+// Whether one expanded scope is wholly inside what the grants allow. Space and repo scopes are
+// split into single operations and each must match some grant, and each type a blob scope accepts
+// must be inside some grant's, so `repo:*` covers an app asking for one collection; other scopes
+// must be granted as written.
 function covered(item, grants) {
   if (item === 'atproto') return true
+  const rp = RepoPermission.fromString(item)
+  if (rp) return rp.collection.every((collection) => rp.action.every((action) => grants.repos.some((g) => g.matches({ collection, action }))))
+  const bp = BlobPermission.fromString(item)
+  if (bp) return bp.accept.every((asked) => grants.blobs.some((g) => g.accept.some((granted) => acceptCovers(granted, asked))))
   const sp = SpacePermission.fromString(item)
   if (!sp) return grants.strings.has(item)
   const ref = { type: sp.type, authority: sp.authority, skey: sp.skey }
@@ -342,6 +358,9 @@ async function createGroup({ label, displayName, creatorDid }) {
           'space:*?action=read_self&manage=create&manage=delete',
           // Labels in any group space, write only: with no action a space scope also reads.
           'space:*?collection=com.atproto.label.label&action=create&action=update&action=delete',
+          // The group's public repo (its declaration, public records) and blob uploads (images).
+          'repo:*',
+          'blob:*/*',
           `rpc:${NS}.listJoinRequests?aud=*`,
           `rpc:${NS}.denyJoinRequest?aud=*`,
         ],
