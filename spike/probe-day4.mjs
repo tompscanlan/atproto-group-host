@@ -20,7 +20,9 @@
 //   f10 denyJoinRequest drops a pending request, once; the denied person may ask again
 //   f11 the rpc: scope is cut on every request: bob made admin signs in and lists; demoted to
 //       member, his same session is refused
-// Run from spike/: /workspaces/scratch/atproto-devnet/scripts/https-run node probe-day4.mjs 2>&1 | tee run-day4.log
+// Run from spike/ (Chromium needs the devnet's leaf certificate):
+//   DEVNET_LEAF_FILE=/workspaces/scratch/atproto-devnet/data/https/leaf.crt \
+//     /workspaces/scratch/atproto-devnet/scripts/https-run node probe-day4.mjs > run-day4.log 2>&1
 import {
   HOST, META, MEMBERS, alice, bob, as, asOwn, call, credentialFor, groupSignIn, listRecords, log, ownSession, spaceUri, state, summary, verdict,
 } from './lib.mjs'
