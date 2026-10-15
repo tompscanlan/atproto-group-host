@@ -10,9 +10,13 @@
 //   (d) the person's roles come from the group's own records: the host offers only the scopes
 //       those roles grant, records which person authorized each token, and cuts each token's
 //       scopes on every request to what that person's roles grant now;
-//   (e) prompt=create makes a group: the account, its meta and members spaces, and their records.
+//   (e) prompt=create makes a group: the account, its meta and members spaces, and their records;
+//   (f) the host enforces from those records: checkUserAccess answers from `access` and the
+//       person's roles, group writes pass the record rules and the writer's `assignable` roles
+//       before the PDS takes them, writes to a space with no `access` record are refused, and
+//       nobody reconfigures a group space through simplespace.
 //
-// Spike-only admin routes under /spike/* set the access answers and show the host's state.
+// Spike-only routes under /spike/* show the host's state and set up test cases.
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
@@ -37,6 +41,9 @@ const MANAGING_APP = `${HOST_DID}#group_host`
 const LOOPBACK = process.env.HOST_LOOPBACK_URL // http://127.0.0.1:7070, where the browser lands
 const STATE_FILE = '/data/grouphost-state.json'
 const log = (...a) => console.log(new Date().toISOString(), '[host]', ...a)
+// The host's own calls to its PDS (creating and seeding a group) carry this, so the gates below
+// let them through. It never leaves the process.
+const INTERNAL = crypto.randomBytes(32).toString('hex')
 
 const NS = 'group.opensocial'
 const META = `${NS}.meta`
@@ -44,7 +51,6 @@ const MEMBERS = `${NS}.members`
 const spaceUri = (did, type, skey = 'self') => `at://${did}/space/${type}/${skey}`
 
 // ---- spike state (a real host keeps these in its own tables) ----
-const access = new Map() // `${space}|${user}|${read|write}` -> boolean
 const tickets = new Map() // id -> { groupDid, personDid, exp }
 const pending = new Map() // signin state -> { requestUri, clientId, mode, groupDid? }
 const consent = new Map() // requestUri -> what the host's consent page shows
@@ -53,6 +59,7 @@ const codePerson = new Map() // authorization code -> person DID, set when the r
 const authorizedBy = [] // { groupDid, personDid, at }: which person each group sign-in stands for
 const accessCalls = [] // every checkUserAccess the PDS made
 const narrowings = [] // every per-request cut, newest last (capped)
+const refusals = [] // every write or simplespace change the host refused
 
 // Which person authorized each token. Kept on the data volume so a restart does not turn every
 // mapped token into an unmapped one (an unmapped token is cut to "atproto").
@@ -112,6 +119,7 @@ async function readGroup(groupDid) {
       memberships: await list(members, `${NS}.membership`),
       permissions: (await list(members, `${NS}.permissions`)).find((r) => r.rkey === 'self')?.value ?? null,
       access: accessRecords,
+      spaces: spaces.map((s) => s.uri),
     }
   })
 }
@@ -148,6 +156,7 @@ async function grantsFor(groupDid, personDid) {
   }
   const strings = new Set()
   const spaces = []
+  const bySpace = new Map() // space uri -> the access-record grants pinned to it
   for (const { scope, space } of raw) {
     let parts
     try {
@@ -162,9 +171,10 @@ async function grantsFor(groupDid, personDid) {
       strings.add(s)
       const sp = SpacePermission.fromString(s)
       if (sp) spaces.push(sp)
+      if (sp && space) bySpace.set(space.uri, [...(bySpace.get(space.uri) ?? []), sp])
     }
   }
-  return { roles, assignable: [...assignable], strings, spaces }
+  return { roles, assignable: [...assignable], strings, spaces, bySpace }
 }
 
 // Whether one expanded scope is wholly inside what the grants allow. Space scopes are split into
@@ -262,12 +272,18 @@ tm.loadTokenClaims = async (tokenType, payload) => {
 async function xrpc(nsid, body, jwt) {
   const res = await fetch(`${LOOPBACK}/xrpc/${nsid}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', ...(jwt ? { authorization: `Bearer ${jwt}` } : {}) },
+    headers: { 'content-type': 'application/json', 'x-grouphost-internal': INTERNAL, ...(jwt ? { authorization: `Bearer ${jwt}` } : {}) },
     body: JSON.stringify(body),
   })
   const json = await res.json().catch(() => null)
   if (!res.ok) throw new Error(`${nsid} ${res.status} ${json?.error ?? ''} ${json?.message ?? ''}`)
   return json
+}
+
+// A session for a group the host holds, with no password: the PDS's account manager mints it.
+// For the host's own acts as the group (setup here, join approval later).
+async function groupJwt(did) {
+  return (await pds.ctx.accountManager.createSession(did, null)).accessJwt
 }
 
 async function createGroup({ label, displayName, creatorDid }) {
@@ -305,7 +321,17 @@ async function createGroup({ label, displayName, creatorDid }) {
   await put(META, `${NS}.profile`, 'self', { displayName, joinPolicy: 'approval' })
   await put(MEMBERS, `${NS}.permissions`, 'self', {
     grants: [
-      { role: 'admin', scopes: ['space:*?action=read_self&manage=create&manage=delete', `rpc:${NS}.listJoinRequests?aud=*`, `rpc:${NS}.denyJoinRequest?aud=*`], assignable: ['admin', 'member'] },
+      {
+        role: 'admin',
+        scopes: [
+          'space:*?action=read_self&manage=create&manage=delete',
+          // Labels in any group space, write only: with no action a space scope also reads.
+          'space:*?collection=com.atproto.label.label&action=create&action=update&action=delete',
+          `rpc:${NS}.listJoinRequests?aud=*`,
+          `rpc:${NS}.denyJoinRequest?aud=*`,
+        ],
+        assignable: ['admin', 'member'],
+      },
       { role: 'member', scopes: [], assignable: [] },
     ],
   })
@@ -477,7 +503,183 @@ ${c.dropped.length ? `<p>Not offered, because your roles do not grant it:</p><ul
 </script>`
 }
 
-// ---- (c) the managing app's answer ----
+// ---- (f) enforcement from the group's records ----
+
+// Who is calling, from the Authorization header. The token is only decoded here, not verified:
+// the PDS verifies the same header right after, so a forged token is refused there. Decoding
+// is enough to find the token's person in the host's table.
+function callerOf(req) {
+  if (req.headers['x-grouphost-internal'] === INTERNAL) return { internal: true }
+  const m = /^(DPoP|Bearer) (\S+)$/.exec(req.headers.authorization || '')
+  if (!m) return { none: true }
+  let payload
+  try {
+    payload = JSON.parse(Buffer.from(m[2].split('.')[1], 'base64url').toString())
+  } catch {
+    return { none: true }
+  }
+  if (payload.jti && payload.client_id) {
+    const e = tokenPerson.get(payload.jti)
+    return { oauth: true, sub: payload.sub, mapped: !!e, personDid: e?.personDid ?? null }
+  }
+  return { legacy: true, sub: payload.sub } // a password session: the group acting as itself
+}
+
+const isHosted = async (did) => !!(did && (await pds.ctx.accountManager.getAccount(did)))
+const refuse = (error, message) => ({ error, message })
+const parseSpace = (uri) => {
+  const [, , authority, , type, skey] = String(uri ?? '').split('/') // at://<did>/space/<type>/<skey>
+  return { authority, type, skey }
+}
+
+// Whether a person may read a group space (and so be tracked as a writer in it): the space's
+// `access` record is public, or one of their roles is granted `read` there. Only `access` grants
+// count here; `permissions` grants are about the group session's own scopes (proposal.md:52-53).
+async function decideAccess(spaceUri, user, kind) {
+  const { authority } = parseSpace(spaceUri)
+  if (user === authority) return { authorized: true, why: 'the group itself' }
+  const g = await readGroup(authority)
+  const acc = g.access.find((a) => a.space.uri === spaceUri)
+  if (!acc) return { authorized: false, why: 'no access record' }
+  if (kind === 'read' && acc.value.public === true) return { authorized: true, why: 'public' }
+  const grants = await grantsFor(authority, user)
+  const s = acc.space
+  const reads = (grants.bySpace.get(spaceUri) ?? []).some((p) => p.matches({ type: s.type, authority, skey: s.skey, action: 'read' }))
+  return { authorized: reads, why: reads ? `roles ${grants.roles.join(',')} grant read` : grants.roles.length ? `roles ${grants.roles.join(',')} do not grant read` : 'no roles' }
+}
+
+const COLLECTION = { membership: `${NS}.membership`, role: `${NS}.role`, access: `${NS}.access`, permissions: `${NS}.permissions` }
+const MEMBERS_ONLY = new Set([COLLECTION.membership, COLLECTION.role, COLLECTION.permissions])
+
+// Every scope in a grant has to expand, the way the PDS would expand it in a token.
+async function badScopes(scopes, groupDid) {
+  const bad = []
+  for (const sc of scopes ?? []) {
+    try {
+      await provider.lexiconManager.buildTokenScope(sc, groupDid)
+    } catch {
+      bad.push(sc)
+    }
+  }
+  return bad
+}
+
+// The checks a group write must pass before the PDS takes it (proposal.md:46, :67; the record
+// lexicons). `ops` is one write, or every write of an applyWrites, checked in order against the
+// state the earlier ones leave. Returns a refusal, or null.
+async function checkGroupWrites(groupDid, space, ops, caller) {
+  if (caller.oauth && !caller.mapped) return refuse('UnknownSession', 'this session was not issued through the group host')
+  const { authority, type } = parseSpace(space)
+  if (authority !== groupDid) return refuse('InvalidSpace', `${space} is not a space of ${groupDid}`)
+  const g = await readGroup(groupDid)
+  if (!g.access.some((a) => a.space.uri === space)) return refuse('UndeclaredSpace', `${space} has no access record, so the group does not write in it`)
+  const roles = new Set(g.roles.map((r) => r.rkey))
+  const memberships = new Map(g.memberships.map((r) => [r.rkey, r.value]))
+  // The group DID itself holds every permission (proposal.md:44); a person holds their roles'.
+  const assignable = caller.personDid ? new Set((await grantsFor(groupDid, caller.personDid)).assignable) : null
+  for (const op of ops) {
+    if (MEMBERS_ONLY.has(op.collection) && type !== MEMBERS) return refuse('WrongSpace', `${op.collection} belongs in the members space`)
+    if (op.collection === COLLECTION.role) {
+      if (op.action === 'delete') {
+        const users = [...memberships.values()].filter((v) => v.roles?.includes(op.rkey))
+        if (users.length) return refuse('RoleInUse', `role ${op.rkey} is held by ${users.length} member(s)`)
+        roles.delete(op.rkey)
+      } else roles.add(op.rkey)
+    }
+    if (op.collection === COLLECTION.membership) {
+      const old = memberships.get(op.rkey)
+      const oldRoles = old?.roles ?? []
+      let added = []
+      let removed = []
+      if (op.action === 'delete') {
+        removed = oldRoles // ejecting: every current role of the member
+        memberships.delete(op.rkey)
+      } else {
+        const v = op.value ?? {}
+        if (v.member !== op.rkey) return refuse('InvalidMembership', 'a membership record key is the member DID')
+        if (!Array.isArray(v.roles) || new Set(v.roles).size !== v.roles.length) return refuse('InvalidMembership', 'roles must be a list of distinct role ids')
+        const unknown = v.roles.filter((r) => !roles.has(r))
+        if (unknown.length) return refuse('UnknownRole', `the group declares no role ${unknown.join(', ')}`)
+        added = v.roles.filter((r) => !oldRoles.includes(r))
+        removed = oldRoles.filter((r) => !v.roles.includes(r))
+        memberships.set(op.rkey, v)
+      }
+      if (assignable) {
+        const not = [...added, ...removed].filter((r) => !assignable.has(r))
+        if (not.length) return refuse('NotAssignable', `your roles cannot assign or remove ${[...new Set(not)].join(', ')}`)
+      }
+    }
+    if ((op.collection === COLLECTION.access || op.collection === COLLECTION.permissions) && op.action !== 'delete') {
+      const grants = op.value?.grants ?? []
+      const named = grants.map((gr) => gr.role)
+      if (new Set(named).size !== named.length) return refuse('InvalidGrants', 'at most one grant per role')
+      const unknown = [...named, ...grants.flatMap((gr) => gr.assignable ?? [])].filter((r) => !roles.has(r))
+      if (unknown.length) return refuse('UnknownRole', `the group declares no role ${[...new Set(unknown)].join(', ')}`)
+      const bad = await badScopes(grants.flatMap((gr) => gr.scopes ?? []), groupDid)
+      if (bad.length) return refuse('InvalidScope', `scopes that do not resolve: ${bad.join(' ')}`)
+    }
+  }
+  return null
+}
+
+// Group writes through com.atproto.space.*: checked here, ahead of the PDS. The JSON body is
+// parsed once, whatever its content type, so the gate cannot be skipped by mislabeling it; the
+// PDS's own body parser sees it is done and uses it, and still refuses a non-JSON content type.
+const SPACE_WRITES = ['createRecord', 'putRecord', 'deleteRecord', 'applyWrites']
+outer.post(
+  SPACE_WRITES.map((n) => `/xrpc/com.atproto.space.${n}`),
+  express.json({ limit: '5mb', type: () => true }),
+  async (req, res, next) => {
+    try {
+      const body = req.body ?? {}
+      if (!(await isHosted(body.repo))) return next()
+      const caller = callerOf(req)
+      if (caller.internal) return next()
+      if (caller.sub && caller.sub !== body.repo) return next() // the PDS refuses a write to another repo
+      const nsid = req.path.split('.').pop()
+      const ops =
+        nsid === 'applyWrites'
+          ? (body.writes ?? []).map((w) => ({ action: String(w.$type ?? '').split('#')[1], collection: w.collection, rkey: w.rkey, value: w.value }))
+          : [{ action: { createRecord: 'create', putRecord: 'put', deleteRecord: 'delete' }[nsid], collection: body.collection, rkey: body.rkey, value: body.record }]
+      const refusal = await checkGroupWrites(body.repo, body.space, ops, caller)
+      if (refusal) {
+        refusals.push({ at: new Date().toISOString(), nsid, group: body.repo, space: body.space, personDid: caller.personDid ?? null, ...refusal })
+        log('group write refused', { nsid, personDid: caller.personDid ?? null, ...refusal })
+        return res.status(403).json(refusal)
+      }
+      next()
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+// Nobody reconfigures a group space through simplespace, the group's own sessions included: a
+// space's policy follows its `access` record, and only the host changes it.
+const SIMPLESPACE_CHANGES = ['createSpace', 'updateSpace', 'deleteSpace', 'putMember', 'removeMember']
+outer.post(
+  SIMPLESPACE_CHANGES.map((n) => `/xrpc/com.atproto.simplespace.${n}`),
+  express.json({ limit: '1mb', type: () => true }),
+  async (req, res, next) => {
+    try {
+      const caller = callerOf(req)
+      if (caller.internal) return next()
+      const authority = req.body?.space ? parseSpace(req.body.space).authority : caller.sub
+      if (await isHosted(authority)) {
+        const nsid = req.path.split('.').pop()
+        const refusal = refuse('GroupSpaceManaged', `group spaces change only through the group host, not ${nsid}`)
+        refusals.push({ at: new Date().toISOString(), nsid, group: authority, personDid: caller.personDid ?? null, ...refusal })
+        log('simplespace change refused', { nsid, authority })
+        return res.status(403).json(refusal)
+      }
+      next()
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+// The managing app's answer, now from the records.
 outer.get('/xrpc/com.atproto.simplespace.checkUserAccess', async (req, res) => {
   const { space, user, access: kind, clientId } = req.query
   let iss = null
@@ -493,33 +695,40 @@ outer.get('/xrpc/com.atproto.simplespace.checkUserAccess', async (req, res) => {
     return res.status(401).json({ error: 'AuthRequired', message: err.message })
   }
   // The caller must be the space's own authority.
-  const authority = String(space).split('/')[2]
-  const authorized = iss === authority && access.get(`${space}|${user}|${kind}`) === true
-  accessCalls.push({ space, user, kind, clientId: clientId ?? null, iss, authorized, at: new Date().toISOString() })
-  log('checkUserAccess', { space, user, kind, iss, authorized })
-  res.json({ authorized })
+  let decision = { authorized: false, why: 'caller is not the space authority' }
+  if (iss === parseSpace(space).authority) decision = await decideAccess(String(space), String(user), String(kind))
+  accessCalls.push({ space, user, kind, clientId: clientId ?? null, iss, ...decision, at: new Date().toISOString() })
+  log('checkUserAccess', { space, user, kind, ...decision })
+  res.json({ authorized: decision.authorized })
 })
 
-// ---- spike admin (no auth: devnet only, bound behind the devnet's nginx) ----
+// ---- spike-only routes (no auth: devnet only, bound behind the devnet's nginx) ----
 outer.use('/spike', express.json())
-outer.post('/spike/access', (req, res) => {
-  const { space, user, kind, allow } = req.body
-  access.set(`${space}|${user}|${kind}`, !!allow)
-  res.json({ ok: true })
-})
 outer.get('/spike/state', async (req, res) => {
   const group = req.query.group
   const deviceAccounts = group ? (await store.listDeviceAccounts({ did: group })).length : null
   const grants = group && req.query.person ? await grantsFor(group, req.query.person) : null
   res.json({
     authorizedBy,
-    accessCalls,
+    accessCalls: accessCalls.filter((c) => !group || String(c.space).includes(group)),
     narrowings,
+    refusals: refusals.filter((r) => !group || r.group === group),
     managingApp: MANAGING_APP,
     tokens: [...tokenPerson.entries()].filter(([, v]) => !group || v.groupDid === group).map(([id, v]) => ({ id: id.slice(0, 8), ...v })),
     deviceAccounts,
     grants: grants && { roles: grants.roles, assignable: grants.assignable, scopes: [...grants.strings] },
   })
+})
+// A space of the group with no access record, for testing the undeclared-space refusal.
+outer.post('/spike/bare-space', async (req, res, next) => {
+  try {
+    const { group, skey } = req.body
+    const MA = { $type: 'com.atproto.simplespace.defs#managingAppPolicy', managingApp: MANAGING_APP }
+    await xrpc('com.atproto.simplespace.createSpace', { spaceType: META, skey, readPolicy: MA, writePolicy: MA, appAccess: { $type: 'com.atproto.simplespace.defs#open' } }, await groupJwt(group))
+    res.json({ space: spaceUri(group, META, skey) })
+  } catch (err) {
+    next(err)
+  }
 })
 
 // ---- everything else: the PDS, unmodified ----

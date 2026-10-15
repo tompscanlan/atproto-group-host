@@ -10,8 +10,8 @@ tested whether the design can work at all.
 ## What the spike proved
 
 It ran on a private https devnet against the spaces alpha PDS (`bluesky-social/atproto` branch
-`permissioned-data-alpha`, commit `79d6307e1`). The first round passed all three checks, and the second
-round passed all seven.
+`permissioned-data-alpha`, commit `79d6307e1`). The first round passed all three checks, the second round
+all seven, and the third all eight.
 
 1. **The PDS works as a library.** `PDS.create(cfg, secrets)` with no overrides, mounted behind an
    outer express app in one process. Our routes answer first. Everything else falls through to the
@@ -41,6 +41,21 @@ round passed all seven.
    uses `remember: false`. The provider then returns a token good for this one request, and the
    host's own consent page uses it. No device stays signed in as the group.
 
+8. **The host enforces from the records.** `checkUserAccess` answers from the space's `access`
+   record and the person's roles, or from `public`. A removed member gets no credential and is not
+   tracked as a writer. Group writes through `com.atproto.space.*` pass the host's checks before
+   the PDS takes them:
+   - a `membership` write needs every role added or removed, and every role of a member being
+     ejected, in the writer's `assignable` roles. A moderator who may write memberships could admit
+     a member, but not promote to admin or eject an admin;
+   - the record rules: a membership is keyed by the member DID and names declared roles; an
+     `access` or `permissions` record has one grant per role, names declared roles, and has
+     scopes that resolve; a role still held cannot be deleted;
+   - the group writes only in spaces that have an `access` record.
+9. **Nobody reconfigures a group space through simplespace.** `createSpace`, `updateSpace`,
+   `putMember`, `removeMember` and `deleteSpace` are refused for group spaces, an admin's session
+   included. Only the host's own code changes a group space's policy.
+
 ## What the spike found
 
 - **The host cannot block a member's write.** Members write to their own PDS, so the write lands.
@@ -58,13 +73,16 @@ round passed all seven.
 
 ## Not tested yet
 
-Ticket replay. Checking each membership write against the writer's `assignable` roles. Answering
-`checkUserAccess` from the `access` records. A confidential OAuth client at a real https origin. A
-person on a PDS other than the alpha. Caching: the spike reads the group's records on every request.
+Ticket replay. Telling other space hosts that a removed member's credentials are revoked: a
+credential already issued keeps working until it expires. The group methods (join, leave, join
+requests, `createSpace`). A confidential OAuth client at a real https origin. A person on a PDS
+other than the alpha. Caching: the spike reads the group's records on every request.
 
 ## Running the spike
 
 It needs the https devnet (PLC, an alpha PDS, nginx with a local CA). `spike/run-host.sh` starts the
 host in a container made from the pinned alpha PDS image, so `@atproto/pds` is exactly that build and
 nothing is built locally. `spike/probe.mjs all` drives the checks. Throwaway keys and test logins are
-written to `spike/data/`, which git ignores. `spike/probe-day2.mjs` drives the second round.
+written to `spike/data/`, which git ignores. `spike/probe-day2.mjs` and `spike/probe-day3.mjs` drive the second and third rounds, with
+`spike/lib.mjs` holding what they share. The first round's `probe.mjs` no longer runs against the
+current host, which now refuses its simplespace setup calls.
