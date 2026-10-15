@@ -1,0 +1,9 @@
+{
+  "name": "spike-group-host",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@atcute/identity-resolver": "1.2.2",
+    "@atcute/oauth-node-client": "1.1.0"
+  }
+}
