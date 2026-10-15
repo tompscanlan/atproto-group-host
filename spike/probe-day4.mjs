@@ -17,12 +17,15 @@
 //   f9  the whole walk: bob asks, alice finds him in the list, approves by writing his membership,
 //       the list empties; bob's own group session, whose roles grant no rpc: scope, can neither
 //       list nor deny; bob leaves
-//   f10 denyJoinRequest drops a pending request, once; the denied person may ask again
+//   f10 denyJoinRequest drops a pending request, once; the denied person may not ask again for a
+//       day (JoinDenied), and may once the hold lapses
 //   f11 the rpc: scope is cut on every request: bob made admin signs in and lists; demoted to
 //       member, his same session is refused
+//   f12 an admin writing a denied person's membership overrules the denial: after they leave, they
+//       may ask again at once
 // Run from spike/: /workspaces/scratch/atproto-devnet/scripts/https-run node probe-day4.mjs 2>&1 | tee run-day4.log
 import {
-  HOST, META, MEMBERS, alice, bob, as, asOwn, call, credentialFor, groupSignIn, listRecords, log, ownSession, spaceUri, state, summary, verdict,
+  HOST, META, MEMBERS, alice, bob, as, asOwn, call, credentialFor, groupSignIn, listRecords, log, ownSession, spaceUri, spike, state, summary, verdict,
 } from './lib.mjs'
 
 const NS = 'group.opensocial'
@@ -245,14 +248,20 @@ const d10 = await deny(bob.did)
 const l10 = await list(A.session, 'alice for the group')
 const d10again = await deny(bob.did)
 const d10never = await deny(NOT_HOSTED)
-const r10again = await join()
+const r10held = await join()
+st = await state({ group: G })
+const held = st.denials.find((d) => d.member === bob.did)
+const holdHours = held ? (Date.parse(held.until) - Date.parse(held.at)) / 3_600_000 : null
+const lapse = await spike('lapse-denial', { group: G, member: bob.did })
+const r10after = await join()
 const tidy = [await viaOwn(CANCEL), await viaOwn(CANCEL, { group: DAY3_GROUP })]
 verdict(
   'f10',
   r10.body?.status === 'pending' && d10.status === 200 && (l10.body?.requests ?? []).length === 0 &&
     d10again.status === 400 && d10again.body?.error === 'JoinRequestNotFound' && d10never.status === 400 && d10never.body?.error === 'JoinRequestNotFound' &&
-    r10again.body?.status === 'pending',
-  `bob asked ${err(r10)}; alice denied ${d10.status}; her list then holds ${(l10.body?.requests ?? []).length}; deny again ${err(d10again)}; deny someone who never asked ${err(d10never)}; bob asked again after the denial ${err(r10again)}; tidied (cancel here and at day 3's group) ${tidy.map((r) => r.status).join(' ')}`,
+    r10held.status === 400 && r10held.body?.error === 'JoinDenied' && !!held && r10held.body?.message?.includes(held.until) && holdHours === 24 &&
+    lapse.lapsed === true && r10after.body?.status === 'pending' && tidy.every((r) => r.status === 200),
+  `bob asked ${err(r10)}; alice denied ${d10.status}; her list then holds ${(l10.body?.requests ?? []).length}; deny again ${err(d10again)}; deny someone who never asked ${err(d10never)}; bob asked again at once ${err(r10held)} ("${r10held.body?.message ?? ''}"), a hold of ${holdHours} hours; with the hold lapsed (spike route) he asked ${err(r10after)}; tidied (cancel here and at day 3's group) ${tidy.map((r) => r.status).join(' ')}`,
 )
 
 // ---------- f11 ----------
@@ -271,6 +280,25 @@ verdict(
   admin11.status === 200 && B2.ok && bob2Rpc.length === 2 && l11a?.status === 200 && demote11.status === 200 &&
     l11b?.status === 403 && l11b.body?.error === 'ScopeMissingError' && cut > 0 && leave11.status === 200,
   `bob made admin ${admin11.status}, signed in and was offered ${bob2Rpc.length} rpc scopes; his list ${l11a?.status}; demoted ${demote11.status}; the same session lists ${l11b?.status} ${l11b?.body?.error ?? ''}; host cuts that dropped the rpc scopes for bob ${cut}; he leaves ${leave11.status}`,
+)
+
+// ---------- f12 ----------
+log("\n## f12 a membership write overrules a denial\n")
+const r12 = await join()
+const d12 = await deny(bob.did)
+const r12held = await join()
+const add12 = await putA(MEM, `${NS}.membership`, bob.did, { member: bob.did, roles: ['member'], createdAt: ts() })
+const r12admit = await join()
+const leave12 = await viaOwn(LEAVE)
+const r12after = await join()
+st = await state({ group: G })
+const denials12 = st.denials.filter((d) => d.member === bob.did).length
+const tidy12 = await viaOwn(CANCEL)
+verdict(
+  'f12',
+  r12.body?.status === 'pending' && d12.status === 200 && r12held.body?.error === 'JoinDenied' && add12.status === 200 &&
+    r12admit.body?.status === 'admitted' && leave12.status === 200 && r12after.body?.status === 'pending' && denials12 === 0 && tidy12.status === 200,
+  `bob asked ${err(r12)}, denied ${d12.status}, asked again ${err(r12held)}; alice wrote his membership anyway ${add12.status}; his requestJoin ${err(r12admit)}; he left ${leave12.status} and asked again ${err(r12after)}; denials left for bob ${denials12}; tidied ${tidy12.status}`,
 )
 
 st = await state({ group: G })
