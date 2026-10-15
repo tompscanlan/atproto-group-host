@@ -14,7 +14,9 @@
 //   (f) the host enforces from those records: checkUserAccess answers from `access` and the
 //       person's roles, group writes pass the record rules and the writer's `assignable` roles
 //       before the PDS takes them, writes to a space with no `access` record are refused, and
-//       nobody reconfigures a group space through simplespace.
+//       nobody reconfigures a group space through simplespace;
+//   (g) a person's own acts on a group (requestJoin) come with service auth from their own PDS,
+//       not a group session, and the host acts on them as the group.
 //
 // Spike-only routes under /spike/* show the host's state and set up test cases.
 import crypto from 'node:crypto'
@@ -65,7 +67,11 @@ const refusals = [] // every write or simplespace change the host refused
 // mapped token into an unmapped one (an unmapped token is cut to "atproto").
 const saved = fs.existsSync(STATE_FILE) ? JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) : {}
 const tokenPerson = new Map(Object.entries(saved.tokenPerson ?? {})) // tokenId -> { groupDid, personDid|null, via }
-const persist = () => fs.writeFileSync(STATE_FILE, JSON.stringify({ tokenPerson: Object.fromEntries(tokenPerson) }))
+// Pending join requests are the host's own state, not records (proposal.md:222-226).
+const joinRequests = new Map(Object.entries(saved.joinRequests ?? {})) // `${group} ${member}` -> { group, member, createdAt, message? }
+const persist = () =>
+  fs.writeFileSync(STATE_FILE, JSON.stringify({ tokenPerson: Object.fromEntries(tokenPerson), joinRequests: Object.fromEntries(joinRequests) }))
+const memberCalls = [] // every member method call: who, which audience, what came of it (capped)
 
 // ---- (a) the PDS as a library ----
 const env = readEnv()
@@ -105,7 +111,7 @@ store.authenticateAccount = async (data) => {
 async function readGroup(groupDid) {
   return pds.ctx.actorStore.read(groupDid, async (actor) => {
     const list = async (space, collection) =>
-      (await actor.space.listRecords(space, { limit: 100, collection })).map((r) => ({ rkey: r.rkey, value: r.value }))
+      (await actor.space.listRecords(space, { limit: 100, collection })).map((r) => ({ rkey: r.rkey, uri: r.uri, cid: r.cid, value: r.value }))
     const members = spaceUri(groupDid, MEMBERS)
     const spaces = await actor.space.listSpaces({ limit: 100, authority: groupDid })
     const accessRecords = []
@@ -118,6 +124,7 @@ async function readGroup(groupDid) {
       roles: await list(members, `${NS}.role`),
       memberships: await list(members, `${NS}.membership`),
       permissions: (await list(members, `${NS}.permissions`)).find((r) => r.rkey === 'self')?.value ?? null,
+      profile: (await list(spaceUri(groupDid, META), `${NS}.profile`)).find((r) => r.rkey === 'self')?.value ?? null,
       access: accessRecords,
       spaces: spaces.map((s) => s.uri),
     }
@@ -702,6 +709,93 @@ outer.get('/xrpc/com.atproto.simplespace.checkUserAccess', async (req, res) => {
   res.json({ authorized: decision.authorized })
 })
 
+// ---- (g) a person's own acts, with service auth from their own PDS ----
+
+class Refusal extends Error {
+  constructor(status, error, message) {
+    super(message)
+    Object.assign(this, { status, error })
+  }
+}
+const sendError = (res, err) =>
+  err instanceof Refusal ? res.status(err.status).json({ error: err.error, message: err.message })
+  : err?.payload && err?.statusCode ? res.status(err.statusCode).json(err.payload) // an XRPC error, from verifyJwt
+  : null
+
+// Joining, cancelling and leaving are the person's acts, not the group's, so they carry service
+// auth from the person's own account (proposal.md:102). The audience is the group: an app calls
+// its own PDS with `atproto-proxy: <group>#atproto_pds`, and that PDS mints the token with the
+// group's bare DID as `aud` (pds pipethrough.js, "Phase 1 of service auth updates"; it says a
+// later phase may send `<group>#atproto_pds`, so that is taken too). A token made for one group
+// is then refused at every other, even on the same host.
+async function memberAuth(req, nsid, groupDid) {
+  const jwt = /^Bearer (\S+)$/.exec(req.headers.authorization || '')?.[1]
+  if (!jwt) throw new Refusal(401, 'AuthRequired', `${nsid} takes service auth from your own account`)
+  const payload = await verifyJwt(jwt, null, nsid, (did, force) => pds.ctx.idResolver.did.resolveAtprotoKey(did, force))
+  if (payload.aud !== groupDid && payload.aud !== `${groupDid}#atproto_pds`) {
+    throw new Refusal(401, 'BadJwtAudience', `service auth for ${nsid} names the group as its audience`)
+  }
+  if (payload.iss.includes('#')) throw new Refusal(401, 'BadJwtIss', 'service auth from a person, not a service')
+  return { member: payload.iss, aud: payload.aud }
+}
+
+const graphemes = (s) => [...new Intl.Segmenter().segment(s)].length
+
+// requestJoin (requestJoin.json): `open` admits at once with the group's default roles,
+// `approval` queues a request, anything else is closed. Invitations are not built, so this host
+// treats `invite` as closed and refuses an `invite` argument. A member asking again gets their
+// membership back; a pending requester asking again gets the same request.
+outer.post('/xrpc/group.opensocial.requestJoin', express.json({ limit: '64kb', type: () => true }), async (req, res, next) => {
+  const call = { at: new Date().toISOString(), nsid: 'requestJoin', group: req.body?.group ?? null, member: null, aud: null }
+  try {
+    const { group, invite, message } = req.body ?? {}
+    if (typeof group !== 'string' || !group.startsWith('did:')) throw new Refusal(400, 'InvalidRequest', 'group must be a DID')
+    Object.assign(call, await memberAuth(req, 'group.opensocial.requestJoin', group))
+    const { member } = call
+    if (!(await isHosted(group))) throw new Refusal(400, 'GroupNotFound', `${group} is not hosted here`)
+    if (message !== undefined && (typeof message !== 'string' || message.length > 20000 || graphemes(message) > 2000)) {
+      throw new Refusal(400, 'InvalidRequest', 'message is a string of at most 2000 graphemes')
+    }
+    const key = `${group} ${member}`
+    const g = await readGroup(group)
+    const existing = g.memberships.find((m) => m.rkey === member)
+    if (existing) {
+      // Approved by a membership write (proposal.md:222), or already in: no request left pending.
+      if (joinRequests.delete(key)) persist()
+      call.result = 'already a member'
+      return res.json({ status: 'admitted', membership: { uri: existing.uri, cid: existing.cid } })
+    }
+    if (invite !== undefined) throw new Refusal(400, 'InvalidInvite', 'this host issues no invitations')
+    const policy = g.profile?.joinPolicy
+    if (policy === 'open') {
+      const roles = g.roles.filter((r) => r.value?.default === true).map((r) => r.rkey)
+      const record = { $type: `${NS}.membership`, member, roles, createdAt: new Date().toISOString() }
+      const ref = await xrpc('com.atproto.space.createRecord', { space: spaceUri(group, MEMBERS), repo: group, collection: `${NS}.membership`, rkey: member, record }, await groupJwt(group))
+      if (joinRequests.delete(key)) persist()
+      call.result = `admitted as ${roles.join(',') || 'no role'}`
+      log('requestJoin admitted', { group, member, roles })
+      return res.json({ status: 'admitted', membership: { uri: ref.uri, cid: ref.cid } })
+    }
+    if (policy === 'approval') {
+      if (!joinRequests.has(key)) {
+        joinRequests.set(key, { group, member, createdAt: new Date().toISOString(), ...(message ? { message } : {}) })
+        persist()
+      }
+      const { group: _, ...request } = joinRequests.get(key)
+      call.result = 'pending'
+      log('requestJoin queued', { group, member })
+      return res.json({ status: 'pending', request })
+    }
+    throw new Refusal(400, 'JoinClosed', policy === 'invite' ? 'this group admits by invitation only' : 'this group sets no join policy')
+  } catch (err) {
+    call.result = err.error ?? err.customErrorName ?? err.message
+    if (!sendError(res, err)) next(err)
+  } finally {
+    memberCalls.push(call)
+    if (memberCalls.length > 50) memberCalls.shift()
+  }
+})
+
 // ---- spike-only routes (no auth: devnet only, bound behind the devnet's nginx) ----
 outer.use('/spike', express.json())
 outer.get('/spike/state', async (req, res) => {
@@ -717,6 +811,8 @@ outer.get('/spike/state', async (req, res) => {
     tokens: [...tokenPerson.entries()].filter(([, v]) => !group || v.groupDid === group).map(([id, v]) => ({ id: id.slice(0, 8), ...v })),
     deviceAccounts,
     grants: grants && { roles: grants.roles, assignable: grants.assignable, scopes: [...grants.strings] },
+    joinRequests: [...joinRequests.values()].filter((r) => !group || r.group === group),
+    memberCalls: memberCalls.filter((c) => !group || c.group === group),
   })
 })
 // A space of the group with no access record, for testing the undeclared-space refusal.

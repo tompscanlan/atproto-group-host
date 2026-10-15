@@ -83,6 +83,6 @@ other than the alpha. Caching: the spike reads the group's records on every requ
 It needs the https devnet (PLC, an alpha PDS, nginx with a local CA). `spike/run-host.sh` starts the
 host in a container made from the pinned alpha PDS image, so `@atproto/pds` is exactly that build and
 nothing is built locally. `spike/probe.mjs all` drives the checks. Throwaway keys and test logins are
-written to `spike/data/`, which git ignores. `spike/probe-day2.mjs` and `spike/probe-day3.mjs` drive the second and third rounds, with
+written to `spike/data/`, which git ignores. `spike/probe-day2.mjs`, `spike/probe-day3.mjs` and `spike/probe-day4.mjs` drive the second to fourth rounds, with
 `spike/lib.mjs` holding what they share. The first round's `probe.mjs` no longer runs against the
 current host, which now refuses its simplespace setup calls.
