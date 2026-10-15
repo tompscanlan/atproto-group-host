@@ -20,6 +20,17 @@
 //   f10 denyJoinRequest drops a pending request, once; the denied person may ask again
 //   f11 the rpc: scope is cut on every request: bob made admin signs in and lists; demoted to
 //       member, his same session is refused
+//   f12 createSpace with alice's group session (manage=create): the space under a generated key,
+//       its access record holding the grants, and one index entry in members
+//   f13 createSpace with a named key and index false: no index entry; the same type and key again
+//       is SpaceAlreadyExists
+//   f14 the new spaces follow their access records: bob as member gets a credential for the
+//       space whose grants give members read, and none for the space granted to admins only
+//   f15 the lexicon's other errors, each leaving no space and no index entry: ReservedSpace (meta,
+//       members), UnknownRole, InvalidScope (not a scope, a permission set that does not resolve,
+//       a bare space type with no published lexicon)
+//   f16 who may call it: no auth is refused, and bob's session from f11, offered manage=create
+//       as admin, is refused now that he is a member
 // Run from spike/ (Chromium needs the devnet's leaf certificate):
 //   DEVNET_LEAF_FILE=/workspaces/scratch/atproto-devnet/data/https/leaf.crt \
 //     /workspaces/scratch/atproto-devnet/scripts/https-run node probe-day4.mjs > run-day4.log 2>&1
@@ -33,13 +44,19 @@ const CANCEL = `${NS}.cancelJoinRequest`
 const LEAVE = `${NS}.leaveGroup`
 const LIST = `${NS}.listJoinRequests`
 const DENY = `${NS}.denyJoinRequest`
+const CREATE = `${NS}.createSpace`
+const MANAGE = 'space:*?authority=self&action=read_self&manage=create'
 const SCOPES = [
   'atproto',
   `space:${META}?authority=self&skey=self&collection=*`,
   `space:${MEMBERS}?authority=self&skey=self&collection=*`,
   `rpc:${LIST}?aud=*`,
   `rpc:${DENY}?aud=*`,
+  MANAGE,
 ]
+// A space type of no app's, with no lexicon published on the devnet: its grants name collections,
+// since a bare space type expands only through its lexicon.
+const TYPE = 'test.grouphost.board'
 const DAY3_GROUP = 'did:plc:5wwtfd2cqt2zvecrmctsla4v' // another group on this host, from day 3
 const NOT_HOSTED = 'did:plc:nosuchgroupnosuchgroup23'
 const HOST_DID = `did:web:${new URL(HOST).host}`
@@ -273,6 +290,98 @@ verdict(
   admin11.status === 200 && B2.ok && bob2Rpc.length === 2 && l11a?.status === 200 && demote11.status === 200 &&
     l11b?.status === 403 && l11b.body?.error === 'ScopeMissingError' && cut > 0 && leave11.status === 200,
   `bob made admin ${admin11.status}, signed in and was offered ${bob2Rpc.length} rpc scopes; his list ${l11a?.status}; demoted ${demote11.status}; the same session lists ${l11b?.status} ${l11b?.body?.error ?? ''}; host cuts that dropped the rpc scopes for bob ${cut}; he leaves ${leave11.status}`,
+)
+
+// ---------- f12 ----------
+log('\n## f12 createSpace: the space, its access record and an index entry\n')
+const create = (s, who, body) => as(s, who, 'POST', CREATE, { body })
+const createA = (body) => create(A.session, 'alice for the group', body)
+const spaceRecords = async (space) => (await as(A.session, 'alice for the group', 'GET', 'com.atproto.space.listRecords', { params: { space, repo: G, limit: '100' } })).body?.records ?? []
+const indexEntries = async () => ((await listRecords(A.session, 'alice for the group', G, MEMBERS)).body?.records ?? []).filter((r) => r.collection === `${NS}.space`)
+const BOARD = [
+  { role: 'admin', scopes: [`space:${TYPE}?collection=*`] },
+  { role: 'member', scopes: [`space:${TYPE}?collection=*&action=read`] },
+]
+const c12 = await createA({ type: TYPE, access: { grants: BOARD } })
+const S1 = c12.body?.space
+const skey1 = String(S1 ?? '').split('/').pop()
+const acc12 = S1 ? (await spaceRecords(S1)).find((r) => r.collection === `${NS}.access` && r.rkey === 'self') : null
+const idx12 = await indexEntries()
+st = await state({ group: G })
+verdict(
+  'f12',
+  A.kept.includes(MANAGE) && c12.status === 200 && S1 === `at://${G}/space/${TYPE}/${skey1}` && /^[2-7a-j][2-7a-z]{12}$/.test(skey1) &&
+    c12.body?.access?.uri === `${S1}/${G}/${NS}.access/self` && acc12?.cid === c12.body?.access?.cid && JSON.stringify(acc12?.value?.grants) === JSON.stringify(BOARD) &&
+    idx12.length === 1 && idx12[0].value?.space === S1 && idx12[0].cid === c12.body?.index?.cid && c12.body?.index?.uri === `${MEM}/${G}/${NS}.space/${idx12[0].rkey}` &&
+    !!st.spaces?.includes(S1),
+  `alice was offered manage=create: ${A.kept.includes(MANAGE)}; createSpace ${c12.status} ${S1 ?? JSON.stringify(c12.body)} (key ${skey1}, a TID: ${/^[2-7a-j][2-7a-z]{12}$/.test(skey1)}); its access record in the new space matches the output (${acc12?.cid === c12.body?.access?.cid}) and holds the grants as sent (${JSON.stringify(acc12?.value?.grants) === JSON.stringify(BOARD)}); index entries in members ${idx12.length}, naming the space: ${idx12[0]?.value?.space === S1}, matching the output: ${idx12[0]?.cid === c12.body?.index?.cid}; the host holds the space: ${!!st.spaces?.includes(S1)}`,
+)
+
+// ---------- f13 ----------
+log('\n## f13 a named key, no index entry, and SpaceAlreadyExists\n')
+const ADMINS = [{ role: 'admin', scopes: [`space:${TYPE}?collection=*`] }]
+const c13 = await createA({ type: TYPE, skey: 'admins', access: { grants: ADMINS }, index: false })
+const S2 = spaceUri(G, TYPE, 'admins')
+const idx13 = await indexEntries()
+const c13again = await createA({ type: TYPE, skey: 'admins', access: { grants: BOARD } })
+const acc13 = (await spaceRecords(S2)).find((r) => r.collection === `${NS}.access` && r.rkey === 'self')
+st = await state({ group: G })
+verdict(
+  'f13',
+  c13.status === 200 && c13.body?.space === S2 && !!c13.body?.access && !('index' in (c13.body ?? {})) && idx13.length === 1 && !!st.spaces?.includes(S2) &&
+    c13again.status === 400 && c13again.body?.error === 'SpaceAlreadyExists' && JSON.stringify(acc13?.value?.grants) === JSON.stringify(ADMINS),
+  `createSpace with key admins and index false ${c13.status} ${c13.body?.space ?? ''}, index in the output: ${'index' in (c13.body ?? {})}; index entries still ${idx13.length}; the host holds the space: ${!!st.spaces?.includes(S2)}; the same type and key again ${err(c13again)}, and the first access record stands (${JSON.stringify(acc13?.value?.grants) === JSON.stringify(ADMINS)})`,
+)
+
+// ---------- f14 ----------
+log('\n## f14 the new spaces follow their access records\n')
+const member14 = await putA(MEM, `${NS}.membership`, bob.did, { member: bob.did, roles: ['member'], createdAt: ts() })
+const cred14a = await credentialFor(bobOwn, S1)
+const cred14b = await credentialFor(bobOwn, S2)
+st = await state({ group: G })
+const answers = (space) => st.accessCalls.filter((c) => c.space === space && c.user === bob.did).map((c) => `${c.authorized} (${c.why})`)
+verdict(
+  'f14',
+  member14.status === 200 && cred14a.status === 200 && cred14b.status !== 200 && answers(S1).some((a) => a.startsWith('true')) && answers(S2).some((a) => a.startsWith('false')),
+  `bob made a member ${member14.status}; his credential for the space granting members read ${cred14a.status}, for the admins-only space ${err(cred14b)}; the host's answers: first ${JSON.stringify(answers(S1))}, second ${JSON.stringify(answers(S2))}`,
+)
+
+// ---------- f15 ----------
+log("\n## f15 the lexicon's other errors leave nothing behind\n")
+const before15 = { spaces: st.spaces?.length, index: (await indexEntries()).length }
+const f15 = [
+  ['the meta space', 'ReservedSpace', { type: META, skey: 'self', access: { grants: [] } }],
+  ['the members space', 'ReservedSpace', { type: MEMBERS, skey: 'self', access: { grants: [] } }],
+  ['meta under another key', 'ReservedSpace', { type: META, skey: 'other', access: { grants: [] } }],
+  ['a grant to an undeclared role', 'UnknownRole', { type: TYPE, access: { grants: [{ role: 'ghost', scopes: [`space:${TYPE}?collection=*&action=read`] }] } }],
+  ['not a scope', 'InvalidScope', { type: TYPE, access: { grants: [{ role: 'member', scopes: ['read the board'] }] } }],
+  ['a permission set that does not resolve', 'InvalidScope', { type: TYPE, access: { grants: [{ role: 'member', scopes: [`include:${NS}.noSuchSet`] }] } }],
+  ['a bare space type with no lexicon', 'InvalidScope', { type: TYPE, access: { grants: [{ role: 'member', scopes: [`space:${TYPE}?action=read`] }] } }],
+]
+const got15 = []
+for (const [what, want, body] of f15) {
+  const r = await createA(body)
+  got15.push({ what, want, got: err(r), ok: r.status === 400 && r.body?.error === want })
+}
+st = await state({ group: G })
+const after15 = { spaces: st.spaces?.length, index: (await indexEntries()).length }
+log(`- f15 cases: ${JSON.stringify(got15)}`)
+verdict(
+  'f15',
+  got15.every((c) => c.ok) && after15.spaces === before15.spaces && after15.index === before15.index,
+  `${got15.filter((c) => c.ok).length}/${got15.length} refused as the lexicon names (${got15.map((c) => `${c.what}: ${c.got}`).join('; ')}); spaces ${before15.spaces} then ${after15.spaces}, index entries ${before15.index} then ${after15.index}`,
+)
+
+// ---------- f16 ----------
+log('\n## f16 who may call createSpace\n')
+const c16none = await call('none', HOST, 'POST', CREATE, { body: { type: TYPE, access: { grants: [] } } })
+const c16bob = B2.ok ? await create(B2.session, 'bob (now a member), his session from f11', { type: TYPE, access: { grants: [] } }) : null
+st = await state({ group: G })
+const leave16 = await viaOwn(LEAVE)
+verdict(
+  'f16',
+  c16none.status === 401 && B2.kept.includes(MANAGE) && c16bob?.status === 403 && c16bob.body?.error === 'ScopeMissingError' && st.spaces?.length === after15.spaces && leave16.status === 200,
+  `no auth ${c16none.status} ${c16none.body?.error ?? ''}; bob's session from f11 was offered manage=create as admin: ${B2.kept.includes(MANAGE)}; as a member now it creates ${c16bob?.status} ${c16bob?.body?.error ?? ''}; spaces still ${st.spaces?.length}; he leaves ${leave16.status}`,
 )
 
 st = await state({ group: G })

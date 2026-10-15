@@ -19,7 +19,8 @@
 //       service auth from their own PDS, not a group session, and the host acts on them as the
 //       group;
 //   (h) the group's own methods on its join requests (listJoinRequests, denyJoinRequest) take a
-//       group session holding the method's rpc: scope.
+//       group session holding the method's rpc: scope, and createSpace takes one holding
+//       manage=create for the space's type.
 //
 // Spike-only routes under /spike/* show the host's state and set up test cases.
 import crypto from 'node:crypto'
@@ -27,7 +28,9 @@ import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import { PDS, envToCfg, envToSecrets, readEnv } from '/app/packages/pds/dist/index.js'
 import { verifyJwt } from '/app/packages/xrpc-server/dist/auth.js'
-import { SpacePermission } from '/app/packages/oauth/oauth-scopes/dist/index.js'
+import { SpacePermission, isAtprotoOauthScope } from '/app/packages/oauth/oauth-scopes/dist/index.js'
+import { TID } from '/app/packages/common-web/dist/index.js'
+import { SpaceRef, isValidNsid, isValidRecordKey } from '/app/packages/syntax/dist/index.js'
 import { OAuthClient, MemoryStore } from '@atcute/oauth-node-client'
 import {
   CompositeDidDocumentResolver,
@@ -43,6 +46,9 @@ const express = require('express')
 const PUBLIC_URL = process.env.HOST_PUBLIC_URL // https://grouphost.devnet.internal
 const HOST_DID = `did:web:${new URL(PUBLIC_URL).host}`
 const MANAGING_APP = `${HOST_DID}#group_host`
+// Every group space is made under this policy, so the PDS asks the host (checkUserAccess) who may
+// read and write it.
+const MA = { $type: 'com.atproto.simplespace.defs#managingAppPolicy', managingApp: MANAGING_APP }
 const LOOPBACK = process.env.HOST_LOOPBACK_URL // http://127.0.0.1:7070, where the browser lands
 const STATE_FILE = '/data/grouphost-state.json'
 const log = (...a) => console.log(new Date().toISOString(), '[host]', ...a)
@@ -305,7 +311,6 @@ async function createGroup({ label, displayName, creatorDid }) {
   const acct = await xrpc('com.atproto.server.createAccount', { handle, email: `${label}@groups.invalid`, password })
   const did = acct.did
   const jwt = acct.accessJwt
-  const MA = { $type: 'com.atproto.simplespace.defs#managingAppPolicy', managingApp: MANAGING_APP }
   const now = new Date().toISOString()
   for (const type of [META, MEMBERS]) {
     await xrpc('com.atproto.simplespace.createSpace', { spaceType: type, skey: 'self', readPolicy: MA, writePolicy: MA, appAccess: { $type: 'com.atproto.simplespace.defs#open' } }, jwt)
@@ -561,10 +566,15 @@ async function decideAccess(spaceUri, user, kind) {
 const COLLECTION = { membership: `${NS}.membership`, role: `${NS}.role`, access: `${NS}.access`, permissions: `${NS}.permissions` }
 const MEMBERS_ONLY = new Set([COLLECTION.membership, COLLECTION.role, COLLECTION.permissions])
 
-// Every scope in a grant has to expand, the way the PDS would expand it in a token.
+// Every scope in a grant has to be an atproto OAuth scope and expand, the way the PDS would
+// expand it in a token. A bare space type (no collection) expands only if its lexicon resolves.
 async function badScopes(scopes, groupDid) {
   const bad = []
   for (const sc of scopes ?? []) {
+    if (!isAtprotoOauthScope(sc)) {
+      bad.push(sc)
+      continue
+    }
     try {
       await provider.lexiconManager.buildTokenScope(sc, groupDid)
     } catch {
@@ -626,7 +636,7 @@ async function checkGroupWrites(groupDid, space, ops, caller) {
       const unknown = [...named, ...grants.flatMap((gr) => gr.assignable ?? [])].filter((r) => !roles.has(r))
       if (unknown.length) return refuse('UnknownRole', `the group declares no role ${[...new Set(unknown)].join(', ')}`)
       const bad = await badScopes(grants.flatMap((gr) => gr.scopes ?? []), groupDid)
-      if (bad.length) return refuse('InvalidScope', `scopes that do not resolve: ${bad.join(' ')}`)
+      if (bad.length) return refuse('InvalidScope', `not OAuth scopes, or do not resolve: ${bad.join(' ')}`)
     }
   }
   return null
@@ -850,17 +860,20 @@ memberMethod('leaveGroup', async ({ group, member, call }) => {
 // above), the method's rpc: scope (proposal.md:222-223). That scope is checked against the host's
 // own service, `#group_host` in its DID document; the proposal's grants say `aud=*`.
 const groupAuth = pds.ctx.authVerifier.authorization({ authorize: (permissions, { params }) => permissions.assertRpc(params) })
+// For a method whose check needs the input (createSpace), the handler asserts it, as the PDS's
+// own simplespace.createSpace does.
+const groupSession = pds.ctx.authVerifier.authorization({ authorize: () => {} })
 
-function groupMethod(name, verb, handler) {
+function groupMethod(name, verb, handler, auth = groupAuth) {
   const nsid = `${NS}.${name}`
   const body = verb === 'POST' ? [express.json({ limit: '64kb', type: () => true })] : []
   outer[verb.toLowerCase()](`/xrpc/${nsid}`, ...body, async (req, res, next) => {
     const call = { at: new Date().toISOString(), nsid: name, group: null, person: null }
     try {
-      const { credentials } = await groupAuth({ req, res, params: { lxm: nsid, aud: MANAGING_APP } })
+      const { credentials } = await auth({ req, res, params: { lxm: nsid, aud: MANAGING_APP } })
       const caller = callerOf(req)
       Object.assign(call, { group: credentials.did, person: caller.personDid ?? (caller.legacy ? 'the group itself' : null) })
-      const out = await handler({ group: credentials.did, input: verb === 'GET' ? req.query : (req.body ?? {}), call })
+      const out = await handler({ group: credentials.did, credentials, input: verb === 'GET' ? req.query : (req.body ?? {}), call })
       if (out === undefined) res.status(200).end()
       else res.json(out)
     } catch (err) {
@@ -912,6 +925,56 @@ groupMethod('denyJoinRequest', 'POST', async ({ group, input: { member }, call }
   log('denyJoinRequest', { group, member })
 })
 
+// createSpace (createSpace.json): manage=create for the space, checked the way the PDS's own
+// simplespace.createSpace checks it (proposal.md:214-221). The host makes the space under the
+// managing-app policy, so the PDS asks the host who may use it, then writes its `access` record
+// and, unless `index` is false, an index entry in members. The host's own writes skip the write
+// gate, so the grants are checked here first and a refused request leaves nothing behind. Errors
+// are the lexicon's four; input the lexicon does not allow is InvalidRequest.
+const isScopes = (a) => Array.isArray(a) && a.length <= 100 && a.every((s) => typeof s === 'string' && s.length >= 1 && s.length <= 2000)
+const isGrant = (g) => typeof g?.role === 'string' && g.role.length <= 512 && isValidRecordKey(g.role) && isScopes(g.scopes)
+groupMethod(
+  'createSpace',
+  'POST',
+  async ({ group, credentials, input: { type, skey = TID.nextStr(), access, index = true }, call }) => {
+    if (typeof type !== 'string' || !isValidNsid(type)) throw new Refusal(400, 'InvalidRequest', 'type must be an NSID')
+    if (typeof skey !== 'string' || !isValidRecordKey(skey)) throw new Refusal(400, 'InvalidRequest', 'skey must be a record key')
+    if (typeof index !== 'boolean') throw new Refusal(400, 'InvalidRequest', 'index must be a boolean')
+    const grants = access?.grants
+    if (!Array.isArray(grants) || grants.length > 100 || !grants.every(isGrant) || !['undefined', 'boolean'].includes(typeof access.public)) {
+      throw new Refusal(400, 'InvalidRequest', 'access must be an accessConfig: optional public, and grants of a role and its scopes')
+    }
+    // group.opensocial.access allows at most one grant per role.
+    if (new Set(grants.map((g) => g.role)).size !== grants.length) throw new Refusal(400, 'InvalidRequest', 'at most one grant per role')
+    const ref = new SpaceRef(group, type, skey)
+    credentials.permissions?.assertSpaceRef(ref, { manage: 'create' }) // a password session is the group itself
+    if (type === META || type === MEMBERS) throw new Refusal(400, 'ReservedSpace', `the ${type} space is made with the group`)
+    const g = await readGroup(group)
+    const declared = new Set(g.roles.map((r) => r.rkey))
+    const unknown = grants.map((gr) => gr.role).filter((r) => !declared.has(r))
+    if (unknown.length) throw new Refusal(400, 'UnknownRole', `the group declares no role ${unknown.join(', ')}`)
+    const bad = await badScopes(grants.flatMap((gr) => gr.scopes), group)
+    if (bad.length) throw new Refusal(400, 'InvalidScope', `not OAuth scopes, or do not resolve: ${bad.join(' ')}`)
+    const space = ref.toString()
+    // The PDS's own check for an existing space (a deleted one included): SpaceAlreadyExists.
+    await pds.ctx.simpleSpaceManager.createSpace(space, { readPolicy: MA, writePolicy: MA, appAccess: { $type: 'com.atproto.simplespace.defs#open' } })
+    const jwt = await groupJwt(group)
+    const record = { $type: `${NS}.access`, ...(access.public === undefined ? {} : { public: access.public }), grants: grants.map(({ role, scopes }) => ({ role, scopes })) }
+    const accessRef = await xrpc('com.atproto.space.createRecord', { space, repo: group, collection: `${NS}.access`, rkey: 'self', record }, jwt)
+    const indexRef = index
+      ? await xrpc(
+          'com.atproto.space.createRecord',
+          { space: spaceUri(group, MEMBERS), repo: group, collection: `${NS}.space`, rkey: TID.nextStr(), record: { $type: `${NS}.space`, space, createdAt: new Date().toISOString() } },
+          jwt,
+        )
+      : null
+    call.result = `created ${type}/${skey}${indexRef ? ', indexed' : ''}`
+    log('createSpace', { group, space, indexed: !!indexRef })
+    return { space, access: { uri: accessRef.uri, cid: accessRef.cid }, ...(indexRef ? { index: { uri: indexRef.uri, cid: indexRef.cid } } : {}) }
+  },
+  groupSession,
+)
+
 // ---- spike-only routes (no auth: devnet only, bound behind the devnet's nginx) ----
 outer.use('/spike', express.json())
 outer.get('/spike/state', async (req, res) => {
@@ -929,13 +992,13 @@ outer.get('/spike/state', async (req, res) => {
     grants: grants && { roles: grants.roles, assignable: grants.assignable, scopes: [...grants.strings] },
     joinRequests: [...joinRequests.values()].filter((r) => !group || r.group === group),
     methodCalls: methodCalls.filter((c) => !group || c.group === group),
+    spaces: group && (await isHosted(group)) ? (await readGroup(group)).spaces : null,
   })
 })
 // A space of the group with no access record, for testing the undeclared-space refusal.
 outer.post('/spike/bare-space', async (req, res, next) => {
   try {
     const { group, skey } = req.body
-    const MA = { $type: 'com.atproto.simplespace.defs#managingAppPolicy', managingApp: MANAGING_APP }
     await xrpc('com.atproto.simplespace.createSpace', { spaceType: META, skey, readPolicy: MA, writePolicy: MA, appAccess: { $type: 'com.atproto.simplespace.defs#open' } }, await groupJwt(group))
     res.json({ space: spaceUri(group, META, skey) })
   } catch (err) {
