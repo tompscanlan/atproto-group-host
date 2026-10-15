@@ -8,7 +8,8 @@ IMAGE=ghcr.io/bluesky-social/atproto@sha256:1cf9349e9f0e89789784569fed376cd64774
 KEYS="${HERE}/data/keys.env"
 mkdir -p "${HERE}/data"
 if [ ! -f "${KEYS}" ]; then
-  ( umask 077
+  umask 077
+  (
     echo "PDS_JWT_SECRET=$(openssl rand -hex 32)"
     echo "PDS_ADMIN_PASSWORD=$(openssl rand -hex 16)"
     echo "PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX=$(openssl rand -hex 32)"
