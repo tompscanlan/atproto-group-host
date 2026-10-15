@@ -72,13 +72,8 @@ const saved = fs.existsSync(STATE_FILE) ? JSON.parse(fs.readFileSync(STATE_FILE,
 const tokenPerson = new Map(Object.entries(saved.tokenPerson ?? {})) // tokenId -> { groupDid, personDid|null, via }
 // Pending join requests are the host's own state, not records (proposal.md:222-226).
 const joinRequests = new Map(Object.entries(saved.joinRequests ?? {})) // `${group} ${member}` -> { group, member, createdAt, message? }
-// A denied person may not ask again for a day (TS, 2026-10-14). Same keys as joinRequests.
-const denials = new Map(Object.entries(saved.denials ?? {})) // `${group} ${member}` -> { group, member, at, until }
 const persist = () =>
-  fs.writeFileSync(
-    STATE_FILE,
-    JSON.stringify({ tokenPerson: Object.fromEntries(tokenPerson), joinRequests: Object.fromEntries(joinRequests), denials: Object.fromEntries(denials) }),
-  )
+  fs.writeFileSync(STATE_FILE, JSON.stringify({ tokenPerson: Object.fromEntries(tokenPerson), joinRequests: Object.fromEntries(joinRequests) }))
 const methodCalls = [] // every group method call: who, which audience, what came of it (capped)
 
 // ---- (a) the PDS as a library ----
@@ -751,18 +746,6 @@ async function memberAuth(req, nsid, groupDid) {
 const graphemes = (s) => [...new Intl.Segmenter().segment(s)].length
 const requestKey = (group, member) => `${group} ${member}`
 const dropRequest = (group, member) => joinRequests.delete(requestKey(group, member)) && (persist(), true)
-const DENIAL_HOLD_MS = 24 * 60 * 60 * 1000
-// A denial stops counting once it lapses, or once the person has been a member since: an admin
-// who writes their membership has overruled it.
-const dropDenial = (group, member) => denials.delete(requestKey(group, member)) && (persist(), true)
-function heldDenial(group, member) {
-  const d = denials.get(requestKey(group, member))
-  if (d && Date.parse(d.until) <= Date.now()) {
-    dropDenial(group, member)
-    return null
-  }
-  return d ?? null
-}
 
 // What every member method shares: a JSON body naming the group, service auth from the caller's
 // own account for that group and that method, and a group this host holds. The handler returns
@@ -792,9 +775,7 @@ function memberMethod(name, handler) {
 // requestJoin (requestJoin.json): `open` admits at once with the group's default roles,
 // `approval` queues a request, anything else is closed. Invitations are not built, so this host
 // treats `invite` as closed and refuses an `invite` argument. A member asking again gets their
-// membership back; a pending requester asking again gets the same request. A person denied in
-// the last day is refused with `JoinDenied`, whatever the policy: the lexicon has no error for
-// it, so this one is the host's own.
+// membership back; a pending requester asking again gets the same request.
 memberMethod('requestJoin', async ({ group, member, body: { invite, message }, call }) => {
   if (message !== undefined && (typeof message !== 'string' || message.length > 20000 || graphemes(message) > 2000)) {
     throw new Refusal(400, 'InvalidRequest', 'message is a string of at most 2000 graphemes')
@@ -802,15 +783,11 @@ memberMethod('requestJoin', async ({ group, member, body: { invite, message }, c
   const g = await readGroup(group)
   const existing = g.memberships.find((m) => m.rkey === member)
   if (existing) {
-    // Approved by a membership write (proposal.md:222), or already in: no request left pending,
-    // and no denial left standing.
+    // Approved by a membership write (proposal.md:222), or already in: no request left pending.
     dropRequest(group, member)
-    dropDenial(group, member)
     call.result = 'already a member'
     return { status: 'admitted', membership: { uri: existing.uri, cid: existing.cid } }
   }
-  const denied = heldDenial(group, member)
-  if (denied) throw new Refusal(400, 'JoinDenied', `your request was denied; you may ask again after ${denied.until}`)
   if (invite !== undefined) throw new Refusal(400, 'InvalidInvite', 'this host issues no invitations')
   const policy = g.profile?.joinPolicy
   if (policy === 'open') {
@@ -849,8 +826,9 @@ memberMethod('cancelJoinRequest', async ({ group, member, call }) => {
 
 // leaveGroup (leaveGroup.json): the host deletes the caller's membership as the group. It is the
 // member's own act, so no `assignable` check, and it withdraws a pending request too. Leaving when
-// not a member changes nothing and succeeds. The last admin may leave (TS, 2026-10-14), even
-// though a group whose remaining roles cannot assign `admin` can then never get one back.
+// not a member changes nothing and succeeds. The last admin may leave (TS, 2026-10-14): the
+// proposal does not say otherwise, though a group whose remaining roles cannot assign `admin` can
+// then never get one back.
 memberMethod('leaveGroup', async ({ group, member, call }) => {
   const withdrew = dropRequest(group, member)
   const g = await readGroup(group)
@@ -860,7 +838,6 @@ memberMethod('leaveGroup', async ({ group, member, call }) => {
     return
   }
   await xrpc('com.atproto.space.deleteRecord', { space: spaceUri(group, MEMBERS), repo: group, collection: `${NS}.membership`, rkey: member }, await groupJwt(group))
-  dropDenial(group, member) // they were a member since any denial, so it no longer stands
   call.result = `left, held ${m.value?.roles?.join(',') || 'no role'}`
   log('leaveGroup', { group, member, roles: m.value?.roles })
 })
@@ -897,17 +874,13 @@ function groupMethod(name, verb, handler) {
 }
 
 // A request whose member now holds a membership was approved by that write (proposal.md:222):
-// it is no longer pending, so it is dropped before the group sees the list. A denial of someone
-// who now holds a membership was overruled, so it goes too.
+// it is no longer pending, so it is dropped before the group sees the list.
 async function pendingFor(group) {
   const g = await readGroup(group)
   const members = new Set(g.memberships.map((m) => m.rkey))
   let changed = false
   for (const [key, r] of joinRequests) {
     if (r.group === group && members.has(r.member)) changed = joinRequests.delete(key)
-  }
-  for (const [key, d] of denials) {
-    if (d.group === group && members.has(d.member)) changed = denials.delete(key)
   }
   if (changed) persist()
   return { g, pending: [...joinRequests.values()].filter((r) => r.group === group) }
@@ -929,14 +902,12 @@ groupMethod('listJoinRequests', 'GET', async ({ group, input, call }) => {
 })
 
 // denyJoinRequest (denyJoinRequest.json): the group comes from the session, the member from the
-// input. The person may not ask again for a day (TS, 2026-10-14).
+// input. A denial is not remembered and the person may ask again at once: the lexicons define no
+// hold and no error for one, and the host does not depart from them (TS, 2026-10-14).
 groupMethod('denyJoinRequest', 'POST', async ({ group, input: { member }, call }) => {
   if (typeof member !== 'string' || !member.startsWith('did:')) throw new Refusal(400, 'InvalidRequest', 'member must be a DID')
   await pendingFor(group)
   if (!dropRequest(group, member)) throw new Refusal(400, 'JoinRequestNotFound', `${member} has no pending join request`)
-  const at = new Date()
-  denials.set(requestKey(group, member), { group, member, at: at.toISOString(), until: new Date(at.getTime() + DENIAL_HOLD_MS).toISOString() })
-  persist()
   call.result = `denied ${member}`
   log('denyJoinRequest', { group, member })
 })
@@ -957,18 +928,8 @@ outer.get('/spike/state', async (req, res) => {
     deviceAccounts,
     grants: grants && { roles: grants.roles, assignable: grants.assignable, scopes: [...grants.strings] },
     joinRequests: [...joinRequests.values()].filter((r) => !group || r.group === group),
-    denials: [...denials.values()].filter((d) => !group || d.group === group),
     methodCalls: methodCalls.filter((c) => !group || c.group === group),
   })
-})
-// Ends a denial's hold now, for testing what happens after a day without waiting one.
-outer.post('/spike/lapse-denial', (req, res) => {
-  const d = denials.get(requestKey(req.body?.group, req.body?.member))
-  if (d) {
-    d.until = new Date(Date.now() - 1000).toISOString()
-    persist()
-  }
-  res.json({ lapsed: !!d })
 })
 // A space of the group with no access record, for testing the undeclared-space refusal.
 outer.post('/spike/bare-space', async (req, res, next) => {
