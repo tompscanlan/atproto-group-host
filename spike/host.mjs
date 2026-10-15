@@ -356,6 +356,9 @@ async function createGroup({ label, displayName, creatorDid }) {
         role: 'admin',
         scopes: [
           'space:*?action=read_self&manage=create&manage=delete',
+          // Read and write in every group space, ones made later included, so a session the
+          // creator authorizes at create already covers the spaces an app adds next (TS, 2026-10-15).
+          'space:*?collection=*',
           // Labels in any group space, write only: with no action a space scope also reads.
           'space:*?collection=com.atproto.label.label&action=create&action=update&action=delete',
           // The group's public repo (its declaration, public records) and blob uploads (images).

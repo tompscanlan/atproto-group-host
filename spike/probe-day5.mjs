@@ -10,6 +10,8 @@
 //       uploadBlob are refused; the declaration is unchanged
 //   h4  the cut on every request covers them too: bob made admin is offered both and writes; demoted
 //       to member, the same session is refused
+//   h5  admin reads and writes in every group space (TS, 2026-10-15): alice's session from the create,
+//       authorized before the calendar space existed, makes that space and writes an event in it
 // Run from spike/ (Chromium needs the devnet's leaf certificate):
 //   DEVNET_LEAF_FILE=/workspaces/scratch/atproto-devnet/data/https/leaf.crt \
 //     /workspaces/scratch/atproto-devnet/scripts/https-run node probe-day5.mjs > run-day5.log 2>&1
@@ -21,12 +23,22 @@ const DECLARATION = `${NS}.declaration`
 // scope.repo and scope.blob from @atcute/oauth-node-client), word for word.
 const REPO = `repo?collection=${DECLARATION}&collection=community.lexicon.calendar.event`
 const BLOB = 'blob?accept=image/*'
-const SCOPES = ['atproto', `space:${META}?authority=self&skey=self&collection=*`, `space:${MEMBERS}?authority=self&skey=self&collection=*`, REPO, BLOB]
+// atmo's calendar space type, published on the devnet's lexicon authority (day 5.2b).
+const CALENDAR = 'rsvp.atmo.group.calendar'
+const EVENT = 'community.lexicon.calendar.event'
+const CAL_READ = `space:${CALENDAR}?authority=self&action=read`
+const CAL_WRITE = `space:${CALENDAR}?authority=self&collection=${EVENT}&action=create&action=update&action=delete`
+const MANAGE = 'space:*?authority=self&manage=create'
+const SCOPES = [
+  'atproto', `space:${META}?authority=self&skey=self&collection=*`, `space:${MEMBERS}?authority=self&skey=self&collection=*`,
+  REPO, BLOB, CAL_READ, CAL_WRITE, MANAGE,
+]
 // A 1x1 PNG.
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64')
 const ts = () => new Date().toISOString()
 const err = (r) => `${r?.status} ${r?.body?.error ?? ''}`.trim()
 const offered = (signIn) => [REPO, BLOB].filter((s) => signIn.kept.includes(s))
+const offeredCalendar = (signIn) => [CAL_READ, CAL_WRITE].filter((s) => signIn.kept.includes(s))
 
 async function upload(session, who) {
   const res = await session.handle('/xrpc/com.atproto.repo.uploadBlob', { method: 'POST', headers: { 'content-type': 'image/png' }, body: PNG })
@@ -118,6 +130,23 @@ verdict(
   admin4.status === 200 && B2.ok && offered(B2).length === 2 && d4a?.status === 200 && u4a?.status === 200 &&
     demote4.status === 200 && d4b?.status === 403 && u4b?.status === 403 && cuts > 0,
   `bob made admin ${admin4.status}, offered ${offered(B2).length} of 2; his putRecord ${err(d4a)}, uploadBlob ${err(u4a)}; demoted ${demote4.status}; the same session's putRecord ${err(d4b)}, uploadBlob ${err(u4b)}; host cuts that dropped both for bob ${cuts}`,
+)
+
+// ---------- h5 ----------
+log("\n## h5 alice's create-time session makes the calendar space and writes in it\n")
+const CAL = spaceUri(G, CALENDAR)
+const made = await asA('POST', `${NS}.createSpace`, {
+  type: CALENDAR,
+  skey: 'self',
+  access: { grants: [{ role: 'admin', scopes: [`space:${CALENDAR}?collection=*`] }, { role: 'member', scopes: [`space:${CALENDAR}?action=read`] }] },
+})
+const ev = await asA('POST', 'com.atproto.space.createRecord', {
+  space: CAL, repo: G, collection: EVENT, record: { $type: EVENT, name: 'Day five meetup', createdAt: ts() },
+})
+verdict(
+  'h5',
+  offeredCalendar(A).length === 2 && made.status === 200 && made.body?.space === CAL && ev.status === 200,
+  `at create alice was offered ${offeredCalendar(A).length} of 2 calendar items, before the space existed; createSpace ${err(made)} (${made.body?.space === CAL ? 'the calendar space' : made.body?.space}); an event written there with the same session ${err(ev)}`,
 )
 
 log(`\n- group of record: ${G}`)
