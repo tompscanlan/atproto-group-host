@@ -12,6 +12,14 @@
 //       cancel; once the membership is written there is nothing to cancel
 //   f7  leaveGroup deletes the caller's membership as the group, with no assignable check, ends
 //       new credentials at once, and succeeds again as a no-op
+//   f8  listJoinRequests, with alice's group session: this group's pending requests only, with the
+//       message, paged by cursor; no auth and a member's service auth are refused
+//   f9  the whole walk: bob asks, alice finds him in the list, approves by writing his membership,
+//       the list empties; bob's own group session, whose roles grant no rpc: scope, can neither
+//       list nor deny; bob leaves
+//   f10 denyJoinRequest drops a pending request, once; the denied person may ask again
+//   f11 the rpc: scope is cut on every request: bob made admin signs in and lists; demoted to
+//       member, his same session is refused
 // Run from spike/: /workspaces/scratch/atproto-devnet/scripts/https-run node probe-day4.mjs 2>&1 | tee run-day4.log
 import {
   HOST, META, MEMBERS, alice, bob, as, asOwn, call, credentialFor, groupSignIn, listRecords, log, ownSession, spaceUri, state, summary, verdict,
@@ -21,7 +29,15 @@ const NS = 'group.opensocial'
 const JOIN = `${NS}.requestJoin`
 const CANCEL = `${NS}.cancelJoinRequest`
 const LEAVE = `${NS}.leaveGroup`
-const SCOPES = ['atproto', `space:${META}?authority=self&skey=self&collection=*`, `space:${MEMBERS}?authority=self&skey=self&collection=*`]
+const LIST = `${NS}.listJoinRequests`
+const DENY = `${NS}.denyJoinRequest`
+const SCOPES = [
+  'atproto',
+  `space:${META}?authority=self&skey=self&collection=*`,
+  `space:${MEMBERS}?authority=self&skey=self&collection=*`,
+  `rpc:${LIST}?aud=*`,
+  `rpc:${DENY}?aud=*`,
+]
 const DAY3_GROUP = 'did:plc:5wwtfd2cqt2zvecrmctsla4v' // another group on this host, from day 3
 const NOT_HOSTED = 'did:plc:nosuchgroupnosuchgroup23'
 const HOST_DID = `did:web:${new URL(HOST).host}`
@@ -62,7 +78,7 @@ log("\n## f1 requestJoin through bob's own PDS\n")
 const j1 = await join()
 const j2 = await join()
 let st = await state({ group: G })
-const auds = [...new Set(st.memberCalls.filter((c) => c.member === bob.did).map((c) => c.aud))]
+const auds = [...new Set(st.methodCalls.filter((c) => c.member === bob.did).map((c) => c.aud))]
 const pending1 = st.joinRequests.filter((r) => r.member === bob.did)
 const ms1 = await memberships()
 verdict(
@@ -172,14 +188,92 @@ const ms7 = await memberships()
 const cred7 = await credentialFor(bobOwn, MEM)
 const l7again = await viaOwn(LEAVE)
 st = await state({ group: G })
-const leaves = st.memberCalls.filter((c) => c.nsid === 'leaveGroup' && c.member === bob.did).map((c) => c.result)
+const leaves = st.methodCalls.filter((c) => c.nsid === 'leaveGroup' && c.member === bob.did).map((c) => c.result)
 verdict(
   'f7',
   JSON.stringify(bobAssignable) === '[]' && cred7a.status === 200 && l7.status === 200 && !ms7[bob.did] && cred7.status !== 200 && l7again.status === 200,
   `bob (member, assignable ${JSON.stringify(bobAssignable)}) had a members credential ${cred7a.status}; leaveGroup ${l7.status}; his membership is gone: ${!ms7[bob.did]}; a new credential ${err(cred7)}; leave again ${l7again.status}; the host's results: ${JSON.stringify(leaves)}`,
 )
 
+// ---------- f8 ----------
+log('\n## f8 listJoinRequests with a group session\n')
+const list = (s, who, params) => as(s, who, 'GET', LIST, { params })
+const r8 = await join({ group: G, message: 'please let me in' })
+const r8other = await join({ group: DAY3_GROUP })
+const l8 = await list(A.session, 'alice for the group')
+const page1 = await list(A.session, 'alice for the group', { limit: '1' })
+const page2 = page1.body?.cursor ? await list(A.session, 'alice for the group', { limit: '1', cursor: page1.body.cursor }) : null
+const l8none = await call('none', HOST, 'GET', LIST)
+const l8svc = await call('bob service auth for listJoinRequests', HOST, 'GET', LIST, { headers: { authorization: `Bearer ${await serviceAuth(G, LIST)}` } })
+const reqs8 = l8.body?.requests ?? []
+const aliceRpc = A.kept.filter((k) => k.startsWith('rpc:'))
+verdict(
+  'f8',
+  JSON.stringify(aliceRpc) === JSON.stringify([`rpc:${LIST}?aud=*`, `rpc:${DENY}?aud=*`]) &&
+    r8.body?.status === 'pending' && r8other.body?.status === 'pending' &&
+    l8.status === 200 && reqs8.length === 1 && reqs8[0].member === bob.did && reqs8[0].message === 'please let me in' &&
+    page1.body?.requests?.length === 1 && !!page1.body?.cursor && page2?.status === 200 && page2.body?.requests?.length === 0 && !page2.body?.cursor &&
+    l8none.status === 401 && l8svc.status >= 400,
+  `alice was offered ${JSON.stringify(aliceRpc)}; bob asked here ${err(r8)} and at day 3's group ${err(r8other)}; alice's list ${l8.status}: ${JSON.stringify(reqs8.map((r) => ({ member: r.member === bob.did ? 'bob' : r.member, message: r.message })))}; limit 1 gave ${page1.body?.requests?.length} and a cursor, the next page ${page2?.body?.requests?.length} and ${page2?.body?.cursor ? 'a' : 'no'} cursor; no auth ${l8none.status} ${l8none.body?.error ?? ''}; bob's service auth as the session ${l8svc.status} ${l8svc.body?.error ?? ''}`,
+)
+
+// ---------- f9 ----------
+log('\n## f9 the whole walk with host methods, and the rpc: scope follows roles\n')
+const approve9 = await putA(MEM, `${NS}.membership`, bob.did, { member: bob.did, roles: ['member'], createdAt: ts() })
+const l9 = await list(A.session, 'alice for the group')
+const B = await groupSignIn(bob, { groupDid: G, scopes: SCOPES })
+const bobRpc = B.kept.filter((k) => k.startsWith('rpc:'))
+const bobDropped = B.dropped.filter((k) => k.startsWith('rpc:'))
+const l9b = B.ok ? await list(B.session, 'bob (member) for the group') : null
+const d9b = B.ok ? await as(B.session, 'bob (member) for the group', 'POST', DENY, { body: { member: alice.did } }) : null
+const leave9 = await viaOwn(LEAVE)
+const ms9 = await memberships()
+verdict(
+  'f9',
+  approve9.status === 200 && l9.status === 200 && (l9.body?.requests ?? []).length === 0 &&
+    B.ok && bobRpc.length === 0 && bobDropped.length === 2 &&
+    l9b?.status === 403 && l9b.body?.error === 'ScopeMissingError' && d9b?.status === 403 && d9b.body?.error === 'ScopeMissingError' &&
+    leave9.status === 200 && !ms9[bob.did],
+  `alice wrote bob's membership ${approve9.status}; her list then holds ${(l9.body?.requests ?? []).length}; bob signed in for the group as a member: rpc scopes offered ${JSON.stringify(bobRpc)}, not offered ${bobDropped.length}; his session lists ${l9b?.status} ${l9b?.body?.error ?? ''} and denies ${d9b?.status} ${d9b?.body?.error ?? ''}; he leaves ${leave9.status} and has a membership: ${!!ms9[bob.did]}`,
+)
+
+// ---------- f10 ----------
+log('\n## f10 denyJoinRequest\n')
+const deny = (member) => as(A.session, 'alice for the group', 'POST', DENY, { body: { member } })
+const r10 = await join()
+const d10 = await deny(bob.did)
+const l10 = await list(A.session, 'alice for the group')
+const d10again = await deny(bob.did)
+const d10never = await deny(NOT_HOSTED)
+const r10again = await join()
+const tidy = [await viaOwn(CANCEL), await viaOwn(CANCEL, { group: DAY3_GROUP })]
+verdict(
+  'f10',
+  r10.body?.status === 'pending' && d10.status === 200 && (l10.body?.requests ?? []).length === 0 &&
+    d10again.status === 400 && d10again.body?.error === 'JoinRequestNotFound' && d10never.status === 400 && d10never.body?.error === 'JoinRequestNotFound' &&
+    r10again.body?.status === 'pending',
+  `bob asked ${err(r10)}; alice denied ${d10.status}; her list then holds ${(l10.body?.requests ?? []).length}; deny again ${err(d10again)}; deny someone who never asked ${err(d10never)}; bob asked again after the denial ${err(r10again)}; tidied (cancel here and at day 3's group) ${tidy.map((r) => r.status).join(' ')}`,
+)
+
+// ---------- f11 ----------
+log('\n## f11 the rpc: scope follows the roles on every request\n')
+const admin11 = await putA(MEM, `${NS}.membership`, bob.did, { member: bob.did, roles: ['admin'], createdAt: ts() })
+const B2 = await groupSignIn(bob, { groupDid: G, scopes: SCOPES })
+const bob2Rpc = B2.kept.filter((k) => k.startsWith('rpc:'))
+const l11a = B2.ok ? await list(B2.session, 'bob (admin) for the group') : null
+const demote11 = await putA(MEM, `${NS}.membership`, bob.did, { member: bob.did, roles: ['member'], createdAt: ts() })
+const l11b = B2.ok ? await list(B2.session, 'bob (now a member), same session') : null
 st = await state({ group: G })
-log(`\n- host's member calls for the group: ${JSON.stringify(st.memberCalls.map((c) => `${c.nsid} ${c.member === bob.did ? 'bob' : c.member} aud=${c.aud === G ? 'group' : c.aud} -> ${c.result}`))}`)
+const cut = st.narrowings.filter((n) => n.personDid === bob.did && /rpc:/.test(n.from) && !/rpc:/.test(n.to)).length
+const leave11 = await viaOwn(LEAVE)
+verdict(
+  'f11',
+  admin11.status === 200 && B2.ok && bob2Rpc.length === 2 && l11a?.status === 200 && demote11.status === 200 &&
+    l11b?.status === 403 && l11b.body?.error === 'ScopeMissingError' && cut > 0 && leave11.status === 200,
+  `bob made admin ${admin11.status}, signed in and was offered ${bob2Rpc.length} rpc scopes; his list ${l11a?.status}; demoted ${demote11.status}; the same session lists ${l11b?.status} ${l11b?.body?.error ?? ''}; host cuts that dropped the rpc scopes for bob ${cut}; he leaves ${leave11.status}`,
+)
+
+st = await state({ group: G })
+log(`\n- host's method calls for the group: ${JSON.stringify(st.methodCalls.map((c) => `${c.nsid} ${c.member ? `${c.member === bob.did ? 'bob' : c.member} aud=${c.aud === G ? 'group' : c.aud}` : `session person ${c.person === alice.did ? 'alice' : c.person === bob.did ? 'bob' : c.person}`} -> ${c.result}`))}`)
 summary()
 process.exit(0)

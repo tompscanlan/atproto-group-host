@@ -17,7 +17,9 @@
 //       nobody reconfigures a group space through simplespace;
 //   (g) a person's own acts on a group (requestJoin, cancelJoinRequest, leaveGroup) come with
 //       service auth from their own PDS, not a group session, and the host acts on them as the
-//       group.
+//       group;
+//   (h) the group's own methods on its join requests (listJoinRequests, denyJoinRequest) take a
+//       group session holding the method's rpc: scope.
 //
 // Spike-only routes under /spike/* show the host's state and set up test cases.
 import crypto from 'node:crypto'
@@ -72,7 +74,7 @@ const tokenPerson = new Map(Object.entries(saved.tokenPerson ?? {})) // tokenId 
 const joinRequests = new Map(Object.entries(saved.joinRequests ?? {})) // `${group} ${member}` -> { group, member, createdAt, message? }
 const persist = () =>
   fs.writeFileSync(STATE_FILE, JSON.stringify({ tokenPerson: Object.fromEntries(tokenPerson), joinRequests: Object.fromEntries(joinRequests) }))
-const memberCalls = [] // every member method call: who, which audience, what came of it (capped)
+const methodCalls = [] // every group method call: who, which audience, what came of it (capped)
 
 // ---- (a) the PDS as a library ----
 const env = readEnv()
@@ -721,6 +723,7 @@ class Refusal extends Error {
 const sendError = (res, err) =>
   err instanceof Refusal ? res.status(err.status).json({ error: err.error, message: err.message })
   : err?.payload && err?.statusCode ? res.status(err.statusCode).json(err.payload) // an XRPC error, from verifyJwt
+  : err?.name === 'ScopeMissingError' ? res.status(err.statusCode).json({ error: err.name, message: err.message })
   : null
 
 // Joining, cancelling and leaving are the person's acts, not the group's, so they carry service
@@ -763,8 +766,8 @@ function memberMethod(name, handler) {
       call.result = err.error ?? err.customErrorName ?? err.message
       if (!sendError(res, err)) next(err)
     } finally {
-      memberCalls.push(call)
-      if (memberCalls.length > 50) memberCalls.shift()
+      methodCalls.push(call)
+      if (methodCalls.length > 50) methodCalls.shift()
     }
   })
 }
@@ -838,6 +841,75 @@ memberMethod('leaveGroup', async ({ group, member, call }) => {
   log('leaveGroup', { group, member, roles: m.value?.roles })
 })
 
+// ---- (h) the group's own methods, with a group session ----
+
+// Nothing behind these routes checks the token, so the host runs the PDS's own check. A password
+// session is the group itself and holds every permission (proposal.md:44). An OAuth token needs a
+// valid DPoP proof and, after the per-request cut to its person's current roles (loadTokenClaims
+// above), the method's rpc: scope (proposal.md:222-223). That scope is checked against the host's
+// own service, `#group_host` in its DID document; the proposal's grants say `aud=*`.
+const groupAuth = pds.ctx.authVerifier.authorization({ authorize: (permissions, { params }) => permissions.assertRpc(params) })
+
+function groupMethod(name, verb, handler) {
+  const nsid = `${NS}.${name}`
+  const body = verb === 'POST' ? [express.json({ limit: '64kb', type: () => true })] : []
+  outer[verb.toLowerCase()](`/xrpc/${nsid}`, ...body, async (req, res, next) => {
+    const call = { at: new Date().toISOString(), nsid: name, group: null, person: null }
+    try {
+      const { credentials } = await groupAuth({ req, res, params: { lxm: nsid, aud: MANAGING_APP } })
+      const caller = callerOf(req)
+      Object.assign(call, { group: credentials.did, person: caller.personDid ?? (caller.legacy ? 'the group itself' : null) })
+      const out = await handler({ group: credentials.did, input: verb === 'GET' ? req.query : (req.body ?? {}), call })
+      if (out === undefined) res.status(200).end()
+      else res.json(out)
+    } catch (err) {
+      call.result = err.error ?? err.customErrorName ?? err.name ?? err.message
+      if (!sendError(res, err)) next(err)
+    } finally {
+      methodCalls.push(call)
+      if (methodCalls.length > 50) methodCalls.shift()
+    }
+  })
+}
+
+// A request whose member now holds a membership was approved by that write (proposal.md:222):
+// it is no longer pending, so it is dropped before the group sees the list.
+async function pendingFor(group) {
+  const g = await readGroup(group)
+  const members = new Set(g.memberships.map((m) => m.rkey))
+  let changed = false
+  for (const [key, r] of joinRequests) {
+    if (r.group === group && members.has(r.member)) changed = joinRequests.delete(key)
+  }
+  if (changed) persist()
+  return { g, pending: [...joinRequests.values()].filter((r) => r.group === group) }
+}
+
+// listJoinRequests (listJoinRequests.json): oldest first; the cursor is the last item's
+// createdAt and member.
+const position = (r) => `${r.createdAt}|${r.member}`
+groupMethod('listJoinRequests', 'GET', async ({ group, input, call }) => {
+  const limit = Math.min(Math.max(Number.parseInt(input.limit ?? '50', 10) || 50, 1), 100)
+  const after = typeof input.cursor === 'string' ? input.cursor : ''
+  const { pending } = await pendingFor(group)
+  const page = pending.sort((a, b) => position(a).localeCompare(position(b))).filter((r) => position(r) > after).slice(0, limit)
+  call.result = `${page.length} of ${pending.length}`
+  return {
+    requests: page.map(({ group: _, ...r }) => r),
+    ...(page.length === limit ? { cursor: position(page.at(-1)) } : {}),
+  }
+})
+
+// denyJoinRequest (denyJoinRequest.json): the group comes from the session, the member from the
+// input. A denial is not remembered: the person may ask again.
+groupMethod('denyJoinRequest', 'POST', async ({ group, input: { member }, call }) => {
+  if (typeof member !== 'string' || !member.startsWith('did:')) throw new Refusal(400, 'InvalidRequest', 'member must be a DID')
+  await pendingFor(group)
+  if (!dropRequest(group, member)) throw new Refusal(400, 'JoinRequestNotFound', `${member} has no pending join request`)
+  call.result = `denied ${member}`
+  log('denyJoinRequest', { group, member })
+})
+
 // ---- spike-only routes (no auth: devnet only, bound behind the devnet's nginx) ----
 outer.use('/spike', express.json())
 outer.get('/spike/state', async (req, res) => {
@@ -854,7 +926,7 @@ outer.get('/spike/state', async (req, res) => {
     deviceAccounts,
     grants: grants && { roles: grants.roles, assignable: grants.assignable, scopes: [...grants.strings] },
     joinRequests: [...joinRequests.values()].filter((r) => !group || r.group === group),
-    memberCalls: memberCalls.filter((c) => !group || c.group === group),
+    methodCalls: methodCalls.filter((c) => !group || c.group === group),
   })
 })
 // A space of the group with no access record, for testing the undeclared-space refusal.
