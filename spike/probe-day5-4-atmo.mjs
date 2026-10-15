@@ -12,15 +12,17 @@
 //       taken by the host's write gate: the host logged no refusal for the group
 //   h3  (acceptance 3) atmo's repair on the group finds nothing to fix: no membership restored,
 //       orphaned or skipped, and the row unchanged
-//   h4  (acceptance 4) the declaration reads back from the group's public repo with no auth; an image
-//       uploaded with atmo's uploader on alice's session, then cited by a public event, resolves at
-//       the host
+//   h4  (acceptance 4) the declaration reads back from the group's public repo with no auth; the
+//       picture the form gave, which atmo's set-up uploaded and its profile names, reads back through
+//       atmo's own avatar read with alice's own space credential, as the group page's route reads it
+//   h5  a signed-out visitor gets no picture: the profile is a meta record, so an anonymous
+//       sync.getBlob does not serve the blob
 // Run from spike/, with atmo's checkout named (its scripts/ bundle the adapter):
 //   ATMO_WEB=/workspaces/scratch/wt-atmo-events-group-host-adapter/apps/web \
 //   DEVNET_LEAF_FILE=/workspaces/scratch/atproto-devnet/data/https/leaf.crt \
 //     /workspaces/scratch/atproto-devnet/scripts/https-run node probe-day5-4-atmo.mjs > run-day5-4-atmo.log 2>&1
 import path from 'node:path'
-import { HERE, HOST, META, MEMBERS, alice, as, call, groupSignIn, log, now, spaceUri, state, summary, verdict } from './lib.mjs'
+import { ALPHA, HERE, HOST, META, MEMBERS, alice, as, call, groupSignIn, log, now, ownSession, spaceUri, state, summary, verdict } from './lib.mjs'
 
 const ATMO_WEB = process.env.ATMO_WEB ?? '/workspaces/scratch/wt-atmo-events-group-host-adapter/apps/web'
 const { bundleAdapter } = await import(path.join(ATMO_WEB, 'scripts/group-host-adapter.build.mjs'))
@@ -28,7 +30,6 @@ const atmo = await import(await bundleAdapter(path.join(HERE, 'data/atmo-adapter
 
 const NS = 'group.opensocial'
 const CALENDAR = 'rsvp.atmo.group.calendar'
-const EVENT = 'community.lexicon.calendar.event'
 const SCOPES = ['atproto', ...atmo.GROUP_SESSION_SCOPES]
 const FIELDS = {
   name: 'Day 5.4 group',
@@ -65,7 +66,7 @@ verdict(
 log("\n## atmo's set-up on the session that came back\n")
 const { db, raw } = atmo.sqliteD1()
 const cred = { kind: 'linked', person: alice.did, session: A.session }
-const setUp = await atmo.setUpHostGroup({ ...env, DB: db }, alice.did, FIELDS, cred, HOST)
+const setUp = await atmo.setUpHostGroup({ ...env, DB: db }, alice.did, FIELDS, cred, HOST, new Blob([PNG], { type: 'image/png' }))
 log(`- ${now()} setUpHostGroup -> ${JSON.stringify(setUp)}`)
 const row = await atmo.getGroupByDid(db, G)
 const reader = atmo.pdsSpaceReader(cred, G)
@@ -100,11 +101,11 @@ verdict(
   'h2',
   (st.spaces ?? []).includes(spaceUri(G, CALENDAR)) && st.refusals.length === 0 &&
     bindings.find((b) => b.role === 'admin')?.actions?.includes('createEvent') &&
-    profile?.displayName === FIELDS.name && profile?.joinPolicy === 'approval' && rules.length === 2 &&
+    profile?.displayName === FIELDS.name && profile?.joinPolicy === 'approval' && profile?.avatar?.mimeType === 'image/png' && rules.length === 2 &&
     metaAccess?.public === true && metaAccess?.grants?.find((g) => g.role === 'admin')?.scopes?.[0] === `space:${META}?collection=*` &&
     calAccess?.grants?.map((g) => g.role).join() === 'admin,member' &&
     !roleRecords.includes('owner'),
-  `calendar space ${(st.spaces ?? []).includes(spaceUri(G, CALENDAR)) ? 'made' : 'missing'}; host refusals ${st.refusals.length}; admin event bindings ${JSON.stringify(bindings.find((b) => b.role === 'admin')?.actions)}; profile ${profile?.displayName}/${profile?.joinPolicy}; rules ${rules.length}; meta public ${metaAccess?.public} with the host's admin grant ${metaAccess?.grants?.find((g) => g.role === 'admin')?.scopes?.[0]}; calendar access roles ${calAccess?.grants?.map((g) => g.role).join()}; role records ${JSON.stringify(roleRecords)}`,
+  `calendar space ${(st.spaces ?? []).includes(spaceUri(G, CALENDAR)) ? 'made' : 'missing'}; host refusals ${st.refusals.length}; admin event bindings ${JSON.stringify(bindings.find((b) => b.role === 'admin')?.actions)}; profile ${profile?.displayName}/${profile?.joinPolicy}, avatar ${profile?.avatar?.mimeType} ${profile?.avatar?.size} bytes; rules ${rules.length}; meta public ${metaAccess?.public} with the host's admin grant ${metaAccess?.grants?.find((g) => g.role === 'admin')?.scopes?.[0]}; calendar access roles ${calAccess?.grants?.map((g) => g.role).join()}; role records ${JSON.stringify(roleRecords)}`,
 )
 
 // ---------- h3 ----------
@@ -130,30 +131,39 @@ verdict(
 )
 
 // ---------- h4 ----------
-log('\n## h4 the declaration, and an image that resolves\n')
+log("\n## h4 the declaration, and the group's picture through atmo's own read\n")
 const decl = await call('none', HOST, 'GET', 'com.atproto.repo.getRecord', { params: { repo: G, collection: `${NS}.declaration`, rkey: 'self' } })
-let blobRef = null
-let uploadError = null
-try {
-  blobRef = await atmo.credentialBlobUploader(cred, G)(new Blob([PNG], { type: 'image/png' }))
-} catch (e) {
-  uploadError = String(e)
+const cid = profile?.avatar?.ref?.$link
+// alice's own session, as the page's route holds a viewer's: atmo gets her a space credential for
+// meta from it, and reads the blob with that.
+const own = await ownSession(alice)
+const holder = {
+  did: own.did,
+  handle: (pathname, init = {}) =>
+    fetch(`${ALPHA}${pathname}`, { ...init, headers: { ...(init.headers ?? {}), authorization: `Bearer ${own.jwt}` } }),
 }
-log(`- ${now()} atmo's uploader -> ${uploadError ?? JSON.stringify(blobRef)}`)
-// A blob the PDS keeps is one a record cites, so a public event cites it, as atmo's public events do.
-const ev = blobRef
-  ? await as(A.session, 'alice for the group', 'POST', 'com.atproto.repo.createRecord', {
-      body: { repo: G, collection: EVENT, record: { $type: EVENT, name: 'Day 5.4 public meetup', createdAt: new Date().toISOString(), image: blobRef } },
-    })
-  : null
-const cid = blobRef?.ref?.$link
-const got = cid ? await fetch(`${HOST}/xrpc/com.atproto.sync.getBlob?${new URLSearchParams({ did: G, cid })}`) : null
-const bytes = got?.ok ? Buffer.from(await got.arrayBuffer()) : null
-log(`- ${now()} GET ${HOST}/xrpc/com.atproto.sync.getBlob (no auth) -> ${got?.status} ${got?.headers.get('content-type')}, ${bytes?.length} bytes`)
+let picture = null
+let readError = null
+try {
+  picture = cid ? await atmo.readGroupAvatar(holder, row, cid) : null
+} catch (e) {
+  readError = String(e)
+}
+const same = picture ? Buffer.from(picture.bytes).equals(PNG) : false
+log(`- ${now()} atmo's readGroupAvatar(alice's own credential, ${cid}) -> ${readError ?? (picture ? `${picture.type}, ${picture.bytes.byteLength} bytes, same bytes ${same}` : 'null')}`)
 verdict(
   'h4',
-  decl.status === 200 && decl.body?.value?.meta === spaceUri(G, META) && !!blobRef && ev?.status === 200 && got?.status === 200 && bytes?.equals(PNG),
-  `declaration read with no auth ${decl.status}, meta ${decl.body?.value?.meta === spaceUri(G, META) ? 'the group meta space' : decl.body?.value?.meta}; atmo's upload ${blobRef ? `${blobRef.mimeType}, ${blobRef.size} bytes` : uploadError}; event citing it ${ev?.status}; getBlob ${got?.status}, same bytes ${bytes?.equals(PNG) ?? false}`,
+  decl.status === 200 && decl.body?.value?.meta === spaceUri(G, META) && !!cid && picture?.type === 'image/png' && same,
+  `declaration read with no auth ${decl.status}, meta ${decl.body?.value?.meta === spaceUri(G, META) ? 'the group meta space' : decl.body?.value?.meta}; the profile's avatar ${cid ? `${profile.avatar.mimeType}, ${profile.avatar.size} bytes` : 'missing'}; read back through atmo with alice's own credential: ${readError ?? (picture ? `${picture.type}, same bytes ${same}` : 'nothing')}`,
+)
+
+// ---------- h5 ----------
+log('\n## h5 no picture for a signed-out visitor\n')
+const anon = cid ? await call('none', HOST, 'GET', 'com.atproto.sync.getBlob', { params: { did: G, cid } }) : null
+verdict(
+  'h5',
+  !!anon && anon.status !== 200,
+  `anonymous sync.getBlob for the avatar -> ${anon?.status} ${anon?.body?.error ?? ''}`,
 )
 
 log(`\n- group of record: ${G}`)
