@@ -15,8 +15,9 @@
 //       person's roles, group writes pass the record rules and the writer's `assignable` roles
 //       before the PDS takes them, writes to a space with no `access` record are refused, and
 //       nobody reconfigures a group space through simplespace;
-//   (g) a person's own acts on a group (requestJoin) come with service auth from their own PDS,
-//       not a group session, and the host acts on them as the group.
+//   (g) a person's own acts on a group (requestJoin, cancelJoinRequest, leaveGroup) come with
+//       service auth from their own PDS, not a group session, and the host acts on them as the
+//       group.
 //
 // Spike-only routes under /spike/* show the host's state and set up test cases.
 import crypto from 'node:crypto'
@@ -740,60 +741,101 @@ async function memberAuth(req, nsid, groupDid) {
 }
 
 const graphemes = (s) => [...new Intl.Segmenter().segment(s)].length
+const requestKey = (group, member) => `${group} ${member}`
+const dropRequest = (group, member) => joinRequests.delete(requestKey(group, member)) && (persist(), true)
+
+// What every member method shares: a JSON body naming the group, service auth from the caller's
+// own account for that group and that method, and a group this host holds. The handler returns
+// the output, or nothing for a method with no output.
+function memberMethod(name, handler) {
+  const nsid = `${NS}.${name}`
+  outer.post(`/xrpc/${nsid}`, express.json({ limit: '64kb', type: () => true }), async (req, res, next) => {
+    const call = { at: new Date().toISOString(), nsid: name, group: req.body?.group ?? null, member: null, aud: null }
+    try {
+      const { group } = req.body ?? {}
+      if (typeof group !== 'string' || !group.startsWith('did:')) throw new Refusal(400, 'InvalidRequest', 'group must be a DID')
+      Object.assign(call, await memberAuth(req, nsid, group))
+      if (!(await isHosted(group))) throw new Refusal(400, 'GroupNotFound', `${group} is not hosted here`)
+      const out = await handler({ group, member: call.member, body: req.body, call })
+      if (out === undefined) res.status(200).end()
+      else res.json(out)
+    } catch (err) {
+      call.result = err.error ?? err.customErrorName ?? err.message
+      if (!sendError(res, err)) next(err)
+    } finally {
+      memberCalls.push(call)
+      if (memberCalls.length > 50) memberCalls.shift()
+    }
+  })
+}
 
 // requestJoin (requestJoin.json): `open` admits at once with the group's default roles,
 // `approval` queues a request, anything else is closed. Invitations are not built, so this host
 // treats `invite` as closed and refuses an `invite` argument. A member asking again gets their
 // membership back; a pending requester asking again gets the same request.
-outer.post('/xrpc/group.opensocial.requestJoin', express.json({ limit: '64kb', type: () => true }), async (req, res, next) => {
-  const call = { at: new Date().toISOString(), nsid: 'requestJoin', group: req.body?.group ?? null, member: null, aud: null }
-  try {
-    const { group, invite, message } = req.body ?? {}
-    if (typeof group !== 'string' || !group.startsWith('did:')) throw new Refusal(400, 'InvalidRequest', 'group must be a DID')
-    Object.assign(call, await memberAuth(req, 'group.opensocial.requestJoin', group))
-    const { member } = call
-    if (!(await isHosted(group))) throw new Refusal(400, 'GroupNotFound', `${group} is not hosted here`)
-    if (message !== undefined && (typeof message !== 'string' || message.length > 20000 || graphemes(message) > 2000)) {
-      throw new Refusal(400, 'InvalidRequest', 'message is a string of at most 2000 graphemes')
-    }
-    const key = `${group} ${member}`
-    const g = await readGroup(group)
-    const existing = g.memberships.find((m) => m.rkey === member)
-    if (existing) {
-      // Approved by a membership write (proposal.md:222), or already in: no request left pending.
-      if (joinRequests.delete(key)) persist()
-      call.result = 'already a member'
-      return res.json({ status: 'admitted', membership: { uri: existing.uri, cid: existing.cid } })
-    }
-    if (invite !== undefined) throw new Refusal(400, 'InvalidInvite', 'this host issues no invitations')
-    const policy = g.profile?.joinPolicy
-    if (policy === 'open') {
-      const roles = g.roles.filter((r) => r.value?.default === true).map((r) => r.rkey)
-      const record = { $type: `${NS}.membership`, member, roles, createdAt: new Date().toISOString() }
-      const ref = await xrpc('com.atproto.space.createRecord', { space: spaceUri(group, MEMBERS), repo: group, collection: `${NS}.membership`, rkey: member, record }, await groupJwt(group))
-      if (joinRequests.delete(key)) persist()
-      call.result = `admitted as ${roles.join(',') || 'no role'}`
-      log('requestJoin admitted', { group, member, roles })
-      return res.json({ status: 'admitted', membership: { uri: ref.uri, cid: ref.cid } })
-    }
-    if (policy === 'approval') {
-      if (!joinRequests.has(key)) {
-        joinRequests.set(key, { group, member, createdAt: new Date().toISOString(), ...(message ? { message } : {}) })
-        persist()
-      }
-      const { group: _, ...request } = joinRequests.get(key)
-      call.result = 'pending'
-      log('requestJoin queued', { group, member })
-      return res.json({ status: 'pending', request })
-    }
-    throw new Refusal(400, 'JoinClosed', policy === 'invite' ? 'this group admits by invitation only' : 'this group sets no join policy')
-  } catch (err) {
-    call.result = err.error ?? err.customErrorName ?? err.message
-    if (!sendError(res, err)) next(err)
-  } finally {
-    memberCalls.push(call)
-    if (memberCalls.length > 50) memberCalls.shift()
+memberMethod('requestJoin', async ({ group, member, body: { invite, message }, call }) => {
+  if (message !== undefined && (typeof message !== 'string' || message.length > 20000 || graphemes(message) > 2000)) {
+    throw new Refusal(400, 'InvalidRequest', 'message is a string of at most 2000 graphemes')
   }
+  const g = await readGroup(group)
+  const existing = g.memberships.find((m) => m.rkey === member)
+  if (existing) {
+    // Approved by a membership write (proposal.md:222), or already in: no request left pending.
+    dropRequest(group, member)
+    call.result = 'already a member'
+    return { status: 'admitted', membership: { uri: existing.uri, cid: existing.cid } }
+  }
+  if (invite !== undefined) throw new Refusal(400, 'InvalidInvite', 'this host issues no invitations')
+  const policy = g.profile?.joinPolicy
+  if (policy === 'open') {
+    const roles = g.roles.filter((r) => r.value?.default === true).map((r) => r.rkey)
+    const record = { $type: `${NS}.membership`, member, roles, createdAt: new Date().toISOString() }
+    const ref = await xrpc('com.atproto.space.createRecord', { space: spaceUri(group, MEMBERS), repo: group, collection: `${NS}.membership`, rkey: member, record }, await groupJwt(group))
+    dropRequest(group, member)
+    call.result = `admitted as ${roles.join(',') || 'no role'}`
+    log('requestJoin admitted', { group, member, roles })
+    return { status: 'admitted', membership: { uri: ref.uri, cid: ref.cid } }
+  }
+  if (policy === 'approval') {
+    const key = requestKey(group, member)
+    if (!joinRequests.has(key)) {
+      joinRequests.set(key, { group, member, createdAt: new Date().toISOString(), ...(message ? { message } : {}) })
+      persist()
+    }
+    const { group: _, ...request } = joinRequests.get(key)
+    call.result = 'pending'
+    log('requestJoin queued', { group, member })
+    return { status: 'pending', request }
+  }
+  throw new Refusal(400, 'JoinClosed', policy === 'invite' ? 'this group admits by invitation only' : 'this group sets no join policy')
+})
+
+// cancelJoinRequest (cancelJoinRequest.json): withdraws a pending request. Once the requester's
+// membership is written the request is approved, not pending, so there is nothing to cancel.
+memberMethod('cancelJoinRequest', async ({ group, member, call }) => {
+  const g = await readGroup(group)
+  const approved = g.memberships.some((m) => m.rkey === member)
+  const had = dropRequest(group, member)
+  if (approved || !had) throw new Refusal(400, 'JoinRequestNotFound', approved ? 'your request was approved: you are a member' : 'you have no pending join request')
+  call.result = 'cancelled'
+  log('cancelJoinRequest', { group, member })
+})
+
+// leaveGroup (leaveGroup.json): the host deletes the caller's membership as the group. It is the
+// member's own act, so no `assignable` check, and it withdraws a pending request too. Leaving when
+// not a member changes nothing and succeeds. Nothing stops the last admin leaving: the proposal
+// does not say, and that is the group's owner's call to make, not this spike's.
+memberMethod('leaveGroup', async ({ group, member, call }) => {
+  const withdrew = dropRequest(group, member)
+  const g = await readGroup(group)
+  const m = g.memberships.find((r) => r.rkey === member)
+  if (!m) {
+    call.result = withdrew ? 'not a member; request withdrawn' : 'not a member'
+    return
+  }
+  await xrpc('com.atproto.space.deleteRecord', { space: spaceUri(group, MEMBERS), repo: group, collection: `${NS}.membership`, rkey: member }, await groupJwt(group))
+  call.result = `left, held ${m.value?.roles?.join(',') || 'no role'}`
+  log('leaveGroup', { group, member, roles: m.value?.roles })
 })
 
 // ---- spike-only routes (no auth: devnet only, bound behind the devnet's nginx) ----

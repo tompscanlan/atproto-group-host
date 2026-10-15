@@ -8,6 +8,10 @@
 //       request is gone, and they get a credential
 //   f4  an open group admits at once with its default roles, the membership written by the group
 //   f5  an invite-only group refuses, and so does an invitation (this host issues none)
+//   f6  cancelJoinRequest withdraws a pending request, once; a token for requestJoin does not
+//       cancel; once the membership is written there is nothing to cancel
+//   f7  leaveGroup deletes the caller's membership as the group, with no assignable check, ends
+//       new credentials at once, and succeeds again as a no-op
 // Run from spike/: /workspaces/scratch/atproto-devnet/scripts/https-run node probe-day4.mjs 2>&1 | tee run-day4.log
 import {
   HOST, META, MEMBERS, alice, bob, as, asOwn, call, credentialFor, groupSignIn, listRecords, log, ownSession, spaceUri, state, summary, verdict,
@@ -15,6 +19,8 @@ import {
 
 const NS = 'group.opensocial'
 const JOIN = `${NS}.requestJoin`
+const CANCEL = `${NS}.cancelJoinRequest`
+const LEAVE = `${NS}.leaveGroup`
 const SCOPES = ['atproto', `space:${META}?authority=self&skey=self&collection=*`, `space:${MEMBERS}?authority=self&skey=self&collection=*`]
 const DAY3_GROUP = 'did:plc:5wwtfd2cqt2zvecrmctsla4v' // another group on this host, from day 3
 const NOT_HOSTED = 'did:plc:nosuchgroupnosuchgroup23'
@@ -42,10 +48,11 @@ const memberships = async () =>
 
 const bobOwn = await ownSession(bob)
 // What bob's app does: call his own PDS, which proxies to the group's host with service auth.
-const join = (body = { group: G }) => asOwn(bobOwn, 'POST', JOIN, { body, headers: { 'atproto-proxy': `${body.group}#atproto_pds` } })
+const viaOwn = (nsid, body = { group: G }) => asOwn(bobOwn, 'POST', nsid, { body, headers: { 'atproto-proxy': `${body.group}#atproto_pds` } })
+const join = (body) => viaOwn(JOIN, body)
 // A service-auth token bob's own PDS mints for an audience and method, sent straight to the host.
 const serviceAuth = async (aud, lxm) => (await asOwn(bobOwn, 'GET', 'com.atproto.server.getServiceAuth', { params: { aud, lxm } })).body?.token
-const direct = (who, token, body) => call(who, HOST, 'POST', JOIN, { body, headers: token ? { authorization: `Bearer ${token}` } : {} })
+const direct = (who, token, body, nsid = JOIN) => call(who, HOST, 'POST', nsid, { body, headers: token ? { authorization: `Bearer ${token}` } : {} })
 const err = (r) => `${r.status} ${r.body?.error ?? r.body?.status ?? ''}`.trim()
 // listRecords gives no record uri, so a returned membership ref is matched by cid, and its uri by shape.
 const sameRef = (ref, rec) => !!rec && ref?.cid === rec.cid && ref?.uri === `${MEM}/${G}/${NS}.membership/${bob.did}`
@@ -132,7 +139,47 @@ verdict(
   `bob removed ${out5.status}, policy invite ${inviteOnly.status}; requestJoin ${err(j5)}; with an invitation ${err(j5i)}; bob has a membership: ${!!ms5[bob.did]}`,
 )
 
+// ---------- f6 ----------
+log('\n## f6 cancelJoinRequest\n')
+const approval = await setPolicy('approval')
+const r6 = await join()
+const c6 = await viaOwn(CANCEL)
 st = await state({ group: G })
-log(`\n- host's member calls for the group: ${JSON.stringify(st.memberCalls.map((c) => `${c.member === bob.did ? 'bob' : c.member} aud=${c.aud === G ? 'group' : c.aud} -> ${c.result}`))}`)
+const left6 = st.joinRequests.filter((r) => r.member === bob.did).length
+const c6again = await viaOwn(CANCEL)
+const c6lxm = await direct('bob service auth for requestJoin, sent to cancel', await serviceAuth(G, JOIN), { group: G }, CANCEL)
+const r6b = await join()
+const approve6 = await putA(MEM, `${NS}.membership`, bob.did, { member: bob.did, roles: ['member'], createdAt: ts() })
+const c6late = await viaOwn(CANCEL)
+const ms6 = await memberships()
+verdict(
+  'f6',
+  approval.status === 200 && r6.body?.status === 'pending' && c6.status === 200 && left6 === 0 &&
+    c6again.status === 400 && c6again.body?.error === 'JoinRequestNotFound' &&
+    c6lxm.status === 401 && c6lxm.body?.error === 'BadJwtLexiconMethod' &&
+    r6b.body?.status === 'pending' && approve6.status === 200 &&
+    c6late.status === 400 && c6late.body?.error === 'JoinRequestNotFound' && !!ms6[bob.did],
+  `policy approval ${approval.status}; requestJoin ${err(r6)}; cancel ${c6.status}, requests left ${left6}; cancel again ${err(c6again)}; a requestJoin token sent to cancel ${err(c6lxm)}; asked again ${err(r6b)}, alice wrote the membership ${approve6.status}, then cancel ${err(c6late)} and bob is a member: ${!!ms6[bob.did]}`,
+)
+
+// ---------- f7 ----------
+log('\n## f7 leaveGroup\n')
+st = await state({ group: G, person: bob.did })
+const bobAssignable = st.grants?.assignable ?? null
+const cred7a = await credentialFor(bobOwn, MEM)
+const l7 = await viaOwn(LEAVE)
+const ms7 = await memberships()
+const cred7 = await credentialFor(bobOwn, MEM)
+const l7again = await viaOwn(LEAVE)
+st = await state({ group: G })
+const leaves = st.memberCalls.filter((c) => c.nsid === 'leaveGroup' && c.member === bob.did).map((c) => c.result)
+verdict(
+  'f7',
+  JSON.stringify(bobAssignable) === '[]' && cred7a.status === 200 && l7.status === 200 && !ms7[bob.did] && cred7.status !== 200 && l7again.status === 200,
+  `bob (member, assignable ${JSON.stringify(bobAssignable)}) had a members credential ${cred7a.status}; leaveGroup ${l7.status}; his membership is gone: ${!ms7[bob.did]}; a new credential ${err(cred7)}; leave again ${l7again.status}; the host's results: ${JSON.stringify(leaves)}`,
+)
+
+st = await state({ group: G })
+log(`\n- host's member calls for the group: ${JSON.stringify(st.memberCalls.map((c) => `${c.nsid} ${c.member === bob.did ? 'bob' : c.member} aud=${c.aud === G ? 'group' : c.aud} -> ${c.result}`))}`)
 summary()
 process.exit(0)
