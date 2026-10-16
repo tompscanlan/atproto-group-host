@@ -80,9 +80,17 @@ other than the alpha. Caching: the spike reads the group's records on every requ
 
 ## Running the spike
 
-It needs the https devnet (PLC, an alpha PDS, nginx with a local CA). `spike/run-host.sh` starts the
-host in a container made from the pinned alpha PDS image, so `@atproto/pds` is exactly that build and
-nothing is built locally. `spike/probe.mjs all` drives the checks. Throwaway keys and test logins are
+It needs the https devnet from `tompscanlan/atproto-devnet` (PLC, an alpha PDS, nginx with a local
+CA), up and used as it is: nothing for the host goes into that repo. `devnet/host.sh up` starts the
+host, or recreates it on the current code, in a container made from the pinned alpha PDS image, so
+`@atproto/pds` is exactly that build and nothing is built locally. It joins the devnet's network,
+adds the `grouphost.devnet.internal` route to the devnet's nginx once, and keeps the host's accounts
+and groups on the volume `grouphost-spike-data`. The host restarts with Docker and stays attached
+through the devnet's own `https-down.sh` and `https-up.sh`, so it comes back with its groups; after
+the devnet's `down -v` the groups' DIDs are gone, and the script's header says what to drop.
+`devnet/host.sh down` stops it and keeps the data; `devnet/host.sh logs` follows its log. Run the
+probes from `spike/` under the devnet's `scripts/https-run`, as `https-run node probe-day3.mjs`.
+`spike/probe.mjs all` drives the first round's checks. Throwaway keys and test logins are
 written to `spike/data/`, which git ignores. `spike/probe-day2.mjs`, `spike/probe-day3.mjs` and `spike/probe-day4.mjs` drive the second to fourth rounds, with
 `spike/lib.mjs` holding what they share. The first round's `probe.mjs` no longer runs against the
 current host, which now refuses its simplespace setup calls.

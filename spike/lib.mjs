@@ -14,7 +14,7 @@ import {
   WellKnownHandleResolver,
 } from '@atcute/identity-resolver'
 // A Chromium launcher that trusts the devnet's certificate. Point DEVNET_BROWSER at your own copy.
-// It finds the certificate through DEVNET_CA_FILE, which defaults to the devnet run-host.sh uses.
+// It finds the certificate through DEVNET_CA_FILE, which defaults to the devnet devnet/host.sh uses.
 process.env.DEVNET_CA_FILE ??= path.join(process.env.DEVNET ?? '/workspaces/scratch/atproto-devnet', 'data/https/ca.crt')
 const { launchBrowser } = await import(process.env.DEVNET_BROWSER ?? '/workspaces/scratch/wt-atproto-permissioned-data-ewnj3/sandbox/opensocial/devnet-browser.mjs')
 

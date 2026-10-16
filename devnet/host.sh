@@ -1,0 +1,70 @@
+#!/bin/sh
+# Run the group host on a running atproto-devnet, from this repo; the devnet repo is used as it is.
+#
+# Usage: devnet/host.sh up | down | logs
+#   up    start the host, or recreate it on the current code. Its data and keys are kept.
+#   down  stop and remove the container. The data volume stays, and so do the keys.
+#   logs  follow the host's log.
+#
+# The host restarts with Docker, and it stays attached through the devnet's own
+# https-down.sh / https-up.sh (no -v), so it comes back with its groups. After the devnet's
+# down -v every DID is gone from its PLC, so the host's groups are dead: drop the volume
+# (docker volume rm grouphost-spike-data) and spike/data/accounts.env before the next up.
+#
+# DEVNET is the atproto-devnet checkout (default /workspaces/scratch/atproto-devnet). The
+# devnet's compose project and lexicon authority come from its data/devnet.env, which its
+# https-up.sh writes.
+set -eu
+HERE="$(cd "$(dirname "$0")" && pwd)"
+export DEVNET="${DEVNET:-/workspaces/scratch/atproto-devnet}"
+DENV="${DEVNET}/data/devnet.env"
+KEYS="${HERE}/../spike/data/keys.env"
+
+env_get() { sed -n "s/^$1=//p" "$2" | tail -1; }
+
+if [ ! -f "${DENV}" ]; then
+  echo "host.sh: no ${DENV}; bring the devnet up with its scripts/https-up.sh first" >&2
+  exit 1
+fi
+export DEVNET_PROJECT="${DEVNET_PROJECT:-$(env_get DEVNET_PROJECT "${DENV}")}"
+export LEX_AUTHORITY_DID="${LEX_AUTHORITY_DID:-$(env_get LEX_AUTHORITY_DID "${DENV}")}"
+dc() { docker compose -f "${HERE}/compose.yaml" "$@"; }
+
+case "${1:-}" in
+up)
+  if ! docker network inspect "${DEVNET_PROJECT}_atproto-devnet" >/dev/null 2>&1; then
+    echo "host.sh: the devnet ${DEVNET_PROJECT} is not up (no network ${DEVNET_PROJECT}_atproto-devnet)" >&2
+    exit 1
+  fi
+  mkdir -p "$(dirname "${KEYS}")"
+  if [ ! -f "${KEYS}" ]; then
+    (
+      umask 077
+      echo "PDS_JWT_SECRET=$(openssl rand -hex 32)"
+      echo "PDS_ADMIN_PASSWORD=$(openssl rand -hex 16)"
+      echo "PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX=$(openssl rand -hex 32)"
+    ) > "${KEYS}"
+  fi
+  docker volume create grouphost-spike-data >/dev/null
+  # A container of that name from before this script (spike/run-host.sh) is not compose's.
+  if [ -n "$(docker ps -aq --filter name=^grouphost-spike$)" ] \
+     && [ -z "$(docker ps -aq --filter name=^grouphost-spike$ --filter label=com.docker.compose.project=grouphost)" ]; then
+    docker rm -f grouphost-spike >/dev/null
+  fi
+  # The devnet's nginx sends https://grouphost.devnet.internal to port 7070 here. The route is
+  # kept in the devnet's data/https/apps, so this runs once.
+  if ! grep -qx 'grouphost 7070' "${DEVNET}/data/https/apps" 2>/dev/null; then
+    "${DEVNET}/scripts/https-app.sh" grouphost 7070
+  fi
+  # Recreate every time: a container stopped while the devnet rebuilt its network cannot start
+  # on the old one ("network ... not found").
+  dc up -d --force-recreate --wait
+  dc ps --format '{{.Name}} {{.Status}} {{.Ports}}'
+  ;;
+down) dc down ;;
+logs) dc logs -f ;;
+*)
+  echo "Usage: devnet/host.sh up | down | logs" >&2
+  exit 2
+  ;;
+esac
