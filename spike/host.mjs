@@ -70,7 +70,7 @@ const codePerson = new Map() // authorization code -> person DID, set when the r
 const authorizedBy = [] // { groupDid, personDid, at }: which person each group sign-in stands for
 const accessCalls = [] // every checkUserAccess the PDS made
 const narrowings = [] // every per-request cut, newest last (capped)
-const refusals = [] // every write or simplespace change the host refused
+const refusals = [] // every write, simplespace change or group sign-in the host refused, by its gate (no `by`), its PDS or its sign-in
 
 // Which person authorized each token. Kept on the data volume so a restart does not turn every
 // mapped token into an unmapped one (an unmapped token is cut to "atproto").
@@ -472,7 +472,10 @@ outer.get('/signin/callback', async (req, res, next) => {
     const group = p.mode === 'create' ? await createGroup({ label: p.label, displayName: p.displayName, creatorDid: personDid }) : { did: p.groupDid }
     const grants = await grantsFor(group.did, personDid)
     log('person signed in through own PDS', { personDid, groupDid: group.did, mode: p.mode, roles: grants.roles })
-    if (!grants.roles.length) return res.status(403).send(`You (${personDid}) hold no role in ${group.did}`)
+    if (!grants.roles.length) {
+      refusals.push({ at: new Date().toISOString(), by: 'sign-in', group: group.did, personDid, message: 'holds no role' })
+      return res.status(403).send(`You (${personDid}) hold no role in ${group.did}`)
+    }
 
     // Offer only what the roles grant: rewrite the pending request's scope before consent.
     const id = reqId(p.requestUri)
@@ -668,6 +671,36 @@ async function checkGroupWrites(groupDid, space, ops, caller) {
 // parsed once, whatever its content type, so the gate cannot be skipped by mislabeling it; the
 // PDS's own body parser sees it is done and uses it, and still refuses a non-JSON content type.
 const SPACE_WRITES = ['createRecord', 'putRecord', 'deleteRecord', 'applyWrites']
+
+// The PDS's own refusals of a write on a group session (a session cut to its person's roles that
+// lacks the scope, above all) go into `refusals` beside the gate's, so the state shows each one.
+const GROUP_WRITES = new Set([
+  ...['createRecord', 'putRecord', 'deleteRecord', 'applyWrites', 'uploadBlob'].map((n) => `/xrpc/com.atproto.repo.${n}`),
+  ...SPACE_WRITES.map((n) => `/xrpc/com.atproto.space.${n}`),
+])
+outer.use((req, res, next) => {
+  if (req.method !== 'POST' || !GROUP_WRITES.has(req.path)) return next()
+  const caller = callerOf(req)
+  if (!caller.oauth) return next()
+  const end = res.end
+  res.end = function (chunk, ...rest) {
+    // A 401 asks the client to authenticate again (a DPoP nonce, an expired token), which it
+    // retries; it is not a refusal of the write.
+    if (res.statusCode >= 400 && res.statusCode < 500 && res.statusCode !== 401 && !res.locals.refusalRecorded) {
+      let body = null
+      try {
+        body = JSON.parse(Buffer.isBuffer(chunk) ? chunk.toString() : String(chunk ?? ''))
+      } catch {}
+      const nsid = req.path.split('.').pop()
+      const refusal = { error: body?.error ?? null, message: body?.message ?? null }
+      refusals.push({ at: new Date().toISOString(), by: 'pds', nsid, status: res.statusCode, group: caller.sub, personDid: caller.personDid, ...refusal })
+      log('group write refused by the PDS', { nsid, personDid: caller.personDid, status: res.statusCode, error: refusal.error })
+    }
+    return end.call(this, chunk, ...rest)
+  }
+  next()
+})
+
 outer.post(
   SPACE_WRITES.map((n) => `/xrpc/com.atproto.space.${n}`),
   express.json({ limit: '5mb', type: () => true }),
@@ -687,6 +720,7 @@ outer.post(
       if (refusal) {
         refusals.push({ at: new Date().toISOString(), nsid, group: body.repo, space: body.space, personDid: caller.personDid ?? null, ...refusal })
         log('group write refused', { nsid, personDid: caller.personDid ?? null, ...refusal })
+        res.locals.refusalRecorded = true
         return res.status(403).json(refusal)
       }
       next()
