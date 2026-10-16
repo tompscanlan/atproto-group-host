@@ -1,5 +1,5 @@
 // probe.mjs: drives the group-host spike (host.mjs) on the https devnet.
-// Run: ../atproto-devnet/scripts/https-run node probe.mjs [c|b|all] 2>&1 | tee run.log
+// Run: ../../atproto-devnet/scripts/https-run node probe.mjs [c|b|all] 2>&1 | tee run.log
 // Logins live in data/accounts.env (mode 600) and are never printed; tokens are never printed.
 import crypto from 'node:crypto'
 import fs from 'node:fs'

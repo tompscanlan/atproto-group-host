@@ -6,7 +6,7 @@
 //   d5  removing a member cuts their existing session on the next request
 //   d6  a refreshed token keeps its person
 //   d7  the token-to-person table survives a host restart
-// Run: ../atproto-devnet/scripts/https-run node probe-day2.mjs 2>&1 | tee run-day2.log
+// Run: ../../atproto-devnet/scripts/https-run node probe-day2.mjs 2>&1 | tee run-day2.log
 // Logins live in data/accounts.env (mode 600) and are never printed; tokens are never printed.
 import { execFileSync } from 'node:child_process'
 import { HOST, META, MEMBERS, alice, bob, as, listRecords, groupSignIn as signIn, log, sleep, spaceUri, state, summary, verdict } from './lib.mjs'

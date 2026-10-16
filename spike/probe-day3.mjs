@@ -7,7 +7,7 @@
 //   e6  a public `access` record lets anyone read that space, and only that one
 //   e7  nobody reconfigures a group space through simplespace, an admin's session included
 //   e8  the group writes only in spaces that have an `access` record
-// Run: ../atproto-devnet/scripts/https-run node probe-day3.mjs 2>&1 | tee run-day3.log
+// Run: ../../atproto-devnet/scripts/https-run node probe-day3.mjs 2>&1 | tee run-day3.log
 import {
   HOST, META, MEMBERS, alice, bob, as, asOwn, credentialFor, groupSignIn, listRecords, listWriters, log, ownSession, sleep, spaceUri, spike, state, summary, verdict,
 } from './lib.mjs'
