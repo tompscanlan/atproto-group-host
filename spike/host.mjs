@@ -566,7 +566,13 @@ function callerOf(req) {
 }
 
 const isHosted = async (did) => !!(did && (await pds.ctx.accountManager.getAccount(did)))
-const refuse = (error, message) => ({ error, message })
+// A refusal names only what the standard names: XRPC's InvalidRequest (a write the record rules
+// refuse) and Forbidden (a write the caller's roles or session do not allow), or a name a
+// group.opensocial lexicon defines. Why it was refused is in the message.
+const refuse = (status, error, message) => ({ status, error, message })
+const invalid = (message) => refuse(400, 'InvalidRequest', message)
+const forbidden = (message) => refuse(403, 'Forbidden', message)
+const refusalBody = ({ error, message }) => ({ error, message })
 const parseSpace = (uri) => {
   const [, , authority, , type, skey] = String(uri ?? '').split('/') // at://<did>/space/<type>/<skey>
   return { authority, type, skey }
@@ -613,21 +619,21 @@ async function badScopes(scopes, groupDid) {
 // lexicons). `ops` is one write, or every write of an applyWrites, checked in order against the
 // state the earlier ones leave. Returns a refusal, or null.
 async function checkGroupWrites(groupDid, space, ops, caller) {
-  if (caller.oauth && !caller.mapped) return refuse('UnknownSession', 'this session was not issued through the group host')
+  if (caller.oauth && !caller.mapped) return forbidden('this session was not issued through the group host')
   const { authority, type } = parseSpace(space)
-  if (authority !== groupDid) return refuse('InvalidSpace', `${space} is not a space of ${groupDid}`)
+  if (authority !== groupDid) return invalid(`${space} is not a space of ${groupDid}`)
   const g = await readGroup(groupDid)
-  if (!g.access.some((a) => a.space.uri === space)) return refuse('UndeclaredSpace', `${space} has no access record, so the group does not write in it`)
+  if (!g.access.some((a) => a.space.uri === space)) return invalid(`${space} has no access record, so the group does not write in it`)
   const roles = new Set(g.roles.map((r) => r.rkey))
   const memberships = new Map(g.memberships.map((r) => [r.rkey, r.value]))
   // The group DID itself holds every permission (proposal.md:44); a person holds their roles'.
   const assignable = caller.personDid ? new Set((await grantsFor(groupDid, caller.personDid)).assignable) : null
   for (const op of ops) {
-    if (MEMBERS_ONLY.has(op.collection) && type !== MEMBERS) return refuse('WrongSpace', `${op.collection} belongs in the members space`)
+    if (MEMBERS_ONLY.has(op.collection) && type !== MEMBERS) return invalid(`${op.collection} belongs in the members space`)
     if (op.collection === COLLECTION.role) {
       if (op.action === 'delete') {
         const users = [...memberships.values()].filter((v) => v.roles?.includes(op.rkey))
-        if (users.length) return refuse('RoleInUse', `role ${op.rkey} is held by ${users.length} member(s)`)
+        if (users.length) return invalid(`role ${op.rkey} is held by ${users.length} member(s)`)
         roles.delete(op.rkey)
       } else roles.add(op.rkey)
     }
@@ -641,27 +647,27 @@ async function checkGroupWrites(groupDid, space, ops, caller) {
         memberships.delete(op.rkey)
       } else {
         const v = op.value ?? {}
-        if (v.member !== op.rkey) return refuse('InvalidMembership', 'a membership record key is the member DID')
-        if (!Array.isArray(v.roles) || new Set(v.roles).size !== v.roles.length) return refuse('InvalidMembership', 'roles must be a list of distinct role ids')
+        if (v.member !== op.rkey) return invalid('a membership record key is the member DID')
+        if (!Array.isArray(v.roles) || new Set(v.roles).size !== v.roles.length) return invalid('roles must be a list of distinct role ids')
         const unknown = v.roles.filter((r) => !roles.has(r))
-        if (unknown.length) return refuse('UnknownRole', `the group declares no role ${unknown.join(', ')}`)
+        if (unknown.length) return refuse(400, 'UnknownRole', `the group declares no role ${unknown.join(', ')}`)
         added = v.roles.filter((r) => !oldRoles.includes(r))
         removed = oldRoles.filter((r) => !v.roles.includes(r))
         memberships.set(op.rkey, v)
       }
       if (assignable) {
         const not = [...added, ...removed].filter((r) => !assignable.has(r))
-        if (not.length) return refuse('NotAssignable', `your roles cannot assign or remove ${[...new Set(not)].join(', ')}`)
+        if (not.length) return forbidden(`your roles cannot assign or remove ${[...new Set(not)].join(', ')}`)
       }
     }
     if ((op.collection === COLLECTION.access || op.collection === COLLECTION.permissions) && op.action !== 'delete') {
       const grants = op.value?.grants ?? []
       const named = grants.map((gr) => gr.role)
-      if (new Set(named).size !== named.length) return refuse('InvalidGrants', 'at most one grant per role')
+      if (new Set(named).size !== named.length) return invalid('at most one grant per role')
       const unknown = [...named, ...grants.flatMap((gr) => gr.assignable ?? [])].filter((r) => !roles.has(r))
-      if (unknown.length) return refuse('UnknownRole', `the group declares no role ${[...new Set(unknown)].join(', ')}`)
+      if (unknown.length) return refuse(400, 'UnknownRole', `the group declares no role ${[...new Set(unknown)].join(', ')}`)
       const bad = await badScopes(grants.flatMap((gr) => gr.scopes ?? []), groupDid)
-      if (bad.length) return refuse('InvalidScope', `not OAuth scopes, or do not resolve: ${bad.join(' ')}`)
+      if (bad.length) return refuse(400, 'InvalidScope', `not OAuth scopes, or do not resolve: ${bad.join(' ')}`)
     }
   }
   return null
@@ -721,7 +727,7 @@ outer.post(
         refusals.push({ at: new Date().toISOString(), nsid, group: body.repo, space: body.space, personDid: caller.personDid ?? null, ...refusal })
         log('group write refused', { nsid, personDid: caller.personDid ?? null, ...refusal })
         res.locals.refusalRecorded = true
-        return res.status(403).json(refusal)
+        return res.status(refusal.status).json(refusalBody(refusal))
       }
       next()
     } catch (err) {
@@ -743,10 +749,10 @@ outer.post(
       const authority = req.body?.space ? parseSpace(req.body.space).authority : caller.sub
       if (await isHosted(authority)) {
         const nsid = req.path.split('.').pop()
-        const refusal = refuse('GroupSpaceManaged', `group spaces change only through the group host, not ${nsid}`)
+        const refusal = forbidden(`group spaces change only through the group host, not ${nsid}`)
         refusals.push({ at: new Date().toISOString(), nsid, group: authority, personDid: caller.personDid ?? null, ...refusal })
         log('simplespace change refused', { nsid, authority })
-        return res.status(403).json(refusal)
+        return res.status(refusal.status).json(refusalBody(refusal))
       }
       next()
     } catch (err) {

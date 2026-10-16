@@ -27,6 +27,9 @@ const CAROL = 'did:plc:carolcarolcarolcarol2345' // membership subjects only; th
 const DAVE = 'did:plc:davedavedavedavedave2345'
 const ts = () => new Date().toISOString()
 const membership = (did, roles) => ({ $type: `${NS}.membership`, member: did, roles, createdAt: ts() })
+// A refusal by the name the standard gives it, with its reason in the message.
+const refusedAs = (r, status, error, reason) => r.status === status && r.body?.error === error && String(r.body?.message ?? '').includes(reason)
+const said = (r) => `${r.status} ${r.body?.error ?? ''}${r.body?.message ? ` (${r.body.message})` : ''}`
 
 // ---------- setup: alice creates a group and adds a moderator role ----------
 log('\n## setup: alice creates a group and adds a moderator role\n')
@@ -114,29 +117,29 @@ if (B.ok) {
   e2 =
     offered &&
     admit.status === 200 &&
-    promote.status === 403 && promote.body?.error === 'NotAssignable' &&
-    ejectAdmin.status === 403 && ejectAdmin.body?.error === 'NotAssignable' &&
-    batch.status === 403 && batch.body?.error === 'NotAssignable' &&
+    refusedAs(promote, 403, 'Forbidden', 'cannot assign or remove admin') &&
+    refusedAs(ejectAdmin, 403, 'Forbidden', 'cannot assign or remove admin') &&
+    refusedAs(batch, 403, 'Forbidden', 'cannot assign or remove admin') &&
     !ms[DAVE] && JSON.stringify(ms[CAROL]) === '["member"]' && JSON.stringify(ms[alice.did]) === '["admin"]' &&
     ejectMember.status === 200
-  verdict('e2', e2, `bob was offered membership writes, not collection=*; admit a member ${admit.status}; promote to admin ${promote.status} ${promote.body?.error ?? ''}; eject the admin ${ejectAdmin.status} ${ejectAdmin.body?.error ?? ''}; a batch with one promotion ${batch.status} ${batch.body?.error ?? ''} and wrote nothing (dave ${ms[DAVE] ? 'present' : 'absent'}, carol ${JSON.stringify(ms[CAROL])}); eject a member ${ejectMember.status}`)
+  verdict('e2', e2, `bob was offered membership writes, not collection=*; admit a member ${admit.status}; promote to admin ${said(promote)}; eject the admin ${said(ejectAdmin)}; a batch with one promotion ${said(batch)} and wrote nothing (dave ${ms[DAVE] ? 'present' : 'absent'}, carol ${JSON.stringify(ms[CAROL])}); eject a member ${ejectMember.status}`)
 } else verdict('e2', false, "bob's sign-in did not reach the app")
 
 // ---------- e3 ----------
 log('\n## e3 record rules, for the admin too\n')
 const cases = [
-  ['membership key is not the member', 'InvalidMembership', () => create(A.session, 'alice', MEM, `${NS}.membership`, DAVE, membership(CAROL, ['member']))],
-  ['undeclared role', 'UnknownRole', () => create(A.session, 'alice', MEM, `${NS}.membership`, DAVE, membership(DAVE, ['ghost']))],
-  ['two grants for one role', 'InvalidGrants', () => put(MET, `${NS}.access`, 'self', { grants: [{ role: 'member', scopes: [`space:${META}?action=read`] }, { role: 'member', scopes: [] }] })],
-  ['grant to an undeclared role', 'UnknownRole', () => put(MET, `${NS}.access`, 'self', { grants: [{ role: 'ghost', scopes: [`space:${META}?action=read`] }] })],
-  ['scope that does not resolve', 'InvalidScope', () => put(MET, `${NS}.access`, 'self', { grants: [{ role: 'member', scopes: [`include:${NS}.noSuchSet`] }] })],
-  ['delete a role someone holds', 'RoleInUse', () => del(A.session, 'alice', MEM, `${NS}.role`, 'moderator')],
-  ['membership outside the members space', 'WrongSpace', () => create(A.session, 'alice', MET, `${NS}.membership`, DAVE, membership(DAVE, ['member']))],
+  ['membership key is not the member', 400, 'InvalidRequest', 'record key is the member DID', () => create(A.session, 'alice', MEM, `${NS}.membership`, DAVE, membership(CAROL, ['member']))],
+  ['undeclared role', 400, 'UnknownRole', 'no role ghost', () => create(A.session, 'alice', MEM, `${NS}.membership`, DAVE, membership(DAVE, ['ghost']))],
+  ['two grants for one role', 400, 'InvalidRequest', 'at most one grant per role', () => put(MET, `${NS}.access`, 'self', { grants: [{ role: 'member', scopes: [`space:${META}?action=read`] }, { role: 'member', scopes: [] }] })],
+  ['grant to an undeclared role', 400, 'UnknownRole', 'no role ghost', () => put(MET, `${NS}.access`, 'self', { grants: [{ role: 'ghost', scopes: [`space:${META}?action=read`] }] })],
+  ['scope that does not resolve', 400, 'InvalidScope', 'do not resolve', () => put(MET, `${NS}.access`, 'self', { grants: [{ role: 'member', scopes: [`include:${NS}.noSuchSet`] }] })],
+  ['delete a role someone holds', 400, 'InvalidRequest', 'is held by', () => del(A.session, 'alice', MEM, `${NS}.role`, 'moderator')],
+  ['membership outside the members space', 400, 'InvalidRequest', 'belongs in the members space', () => create(A.session, 'alice', MET, `${NS}.membership`, DAVE, membership(DAVE, ['member']))],
 ]
 const e3r = []
-for (const [what, want, run] of cases) {
+for (const [what, status, error, reason, run] of cases) {
   const r = await run()
-  e3r.push({ what, want, got: `${r.status} ${r.body?.error ?? ''}`, ok: r.status === 403 && r.body?.error === want })
+  e3r.push({ what, want: `${status} ${error}`, got: said(r), ok: refusedAs(r, status, error, reason) })
 }
 // The gate reads the body whatever its content type says.
 const mislabeled = await A.session.handle('/xrpc/com.atproto.space.createRecord', {
@@ -201,7 +204,7 @@ const ss = [
   ['deleteSpace', await asA('POST', 'com.atproto.simplespace.deleteSpace', { space: MEM })],
 ]
 const still = await listRecords(A.session, 'alice for the group', G, MEMBERS)
-verdict('e7', ss.every(([, r]) => r.status === 403 && r.body?.error === 'GroupSpaceManaged') && still.status === 200, `alice's admin session (it holds manage=create and manage=delete): ${ss.map(([n, r]) => `${n} ${r.status} ${r.body?.error ?? ''}`).join('; ')}; members space still reads ${still.status}`)
+verdict('e7', ss.every(([, r]) => refusedAs(r, 403, 'Forbidden', 'only through the group host')) && still.status === 200, `alice's admin session (it holds manage=create and manage=delete): ${ss.map(([n, r]) => `${n} ${said(r)}`).join('; ')}; members space still reads ${still.status}`)
 
 // ---------- e8 ----------
 log('\n## e8 the group writes only in declared spaces\n')
@@ -209,7 +212,7 @@ const bare = await spike('bare-space', { group: G, skey: 'bare' })
 const label8 = (space) => create(A.session, 'alice for the group', space, 'com.atproto.label.label', undefined, { uri: `at://${G}`, val: 'spike', createdAt: ts() })
 const inBare = await label8(bare.space)
 const inMeta = await label8(MET)
-verdict('e8', inBare.status === 403 && inBare.body?.error === 'UndeclaredSpace' && inMeta.status === 200, `a label (a grant across all spaces) into a space with no access record ${inBare.status} ${inBare.body?.error ?? ''}; into meta ${inMeta.status}`)
+verdict('e8', refusedAs(inBare, 400, 'InvalidRequest', 'has no access record') && inMeta.status === 200, `a label (a grant across all spaces) into a space with no access record ${said(inBare)}; into meta ${inMeta.status}`)
 
 st = await state({ group: G })
 log(`\n- host refusals for the group: ${JSON.stringify(st.refusals.map((r) => `${r.nsid} ${r.error}`))}`)
