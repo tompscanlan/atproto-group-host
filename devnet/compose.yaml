@@ -1,5 +1,5 @@
-# The group host on a running atproto-devnet (tompscanlan/atproto-devnet, the https stack).
-# Start and stop it with devnet/up.sh and devnet/down.sh; they set the variables below.
+# The group host on a running atproto-devnet (OpenMeet-Team/atproto-devnet, the https stack).
+# Start and stop it with devnet/host.sh, which sets the variables below.
 #
 # The host joins the devnet's network from outside its compose project, so the devnet's own
 # down and up leave it attached (compose warns "Resource is still in use" and reuses the

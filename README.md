@@ -4,8 +4,8 @@ A group host for atproto groups. A group is an account with its own DID. It live
 host runs. People sign in through their own PDS to act for the group, and the host decides who may
 read and write the group's permissioned spaces.
 
-This repo is at the start. Today it holds only a spike in `spike/`. The spike is throwaway code that
-tested whether the design can work at all.
+This repo is at the start. Today it holds a spike in `spike/`, and in `devnet/` what runs it on a
+test network. The spike is throwaway code that tested whether the design can work at all.
 
 ## What the spike proved
 
@@ -78,19 +78,116 @@ credential already issued keeps working until it expires. The group methods (joi
 requests, `createSpace`). A confidential OAuth client at a real https origin. A person on a PDS
 other than the alpha. Caching: the spike reads the group's records on every request.
 
-## Running the spike
+## Running it on the devnet
 
-It needs the https devnet from `tompscanlan/atproto-devnet` (PLC, an alpha PDS, nginx with a local
-CA), up and used as it is: nothing for the host goes into that repo. `devnet/host.sh up` starts the
-host, or recreates it on the current code, in a container made from the pinned alpha PDS image, so
-`@atproto/pds` is exactly that build and nothing is built locally. It joins the devnet's network,
-adds the `grouphost.devnet.internal` route to the devnet's nginx once, and keeps the host's accounts
-and groups on the volume `grouphost-spike-data`. The host restarts with Docker and stays attached
-through the devnet's own `https-down.sh` and `https-up.sh`, so it comes back with its groups; after
-the devnet's `down -v` the groups' DIDs are gone, and the script's header says what to drop.
-`devnet/host.sh down` stops it and keeps the data; `devnet/host.sh logs` follows its log. Run the
-probes from `spike/` under the devnet's `scripts/https-run`, as `https-run node probe-day3.mjs`.
-`spike/probe.mjs all` drives the first round's checks. Throwaway keys and test logins are
-written to `spike/data/`, which git ignores. `spike/probe-day2.mjs`, `spike/probe-day3.mjs` and `spike/probe-day4.mjs` drive the second to fourth rounds, with
-`spike/lib.mjs` holding what they share. The first round's `probe.mjs` no longer runs against the
-current host, which now refuses its simplespace setup calls.
+The host runs on a private https devnet from
+[`OpenMeet-Team/atproto-devnet`](https://github.com/OpenMeet-Team/atproto-devnet): its PLC, its spaces
+alpha PDS, and an nginx that serves every name with a local CA. The devnet is used as it is; nothing
+for the host goes into that repo. Below, `$DEVNET` is that checkout; `devnet/host.sh` defaults to
+`/workspaces/scratch/atproto-devnet`.
+
+### 1. Bring the devnet up
+
+The devnet README's "The https devnet" has the details. In short:
+
+```bash
+export DEVNET=/path/to/atproto-devnet
+cd "$DEVNET"
+export DEVNET_PROJECT=devnet-mine   # the scripts refuse the shared devnet-spaces without DEVNET_RESET_OK=1
+./scripts/https-up.sh               # safe to rerun; writes data/devnet.env
+```
+
+Only one https devnet can hold port 443 on a machine, so if one is already up, use it.
+`devnet/host.sh` reads the compose project and the lexicon authority from `$DEVNET/data/devnet.env`.
+
+### 2. Publish the group lexicons (a new devnet only)
+
+The host checks every scope a group's records name against the lexicons its PDS resolves, which
+come from the devnet's lexicon authority. A devnet made from scratch, or after `https-down.sh -v`,
+has an empty authority. Publish the opensocial proposal's lexicons
+([tangled.org/opensocial.group/proposal](https://tangled.org/opensocial.group/proposal)) into it:
+
+```bash
+"$DEVNET/scripts/https-lexicons.sh" <proposal checkout>/lexicons
+```
+
+It leaves alone a record that already holds the same document. Publishing from another checkout
+replaces the lexicons for every app on the devnet.
+
+### 3. Start the host
+
+From this repo's root:
+
+```bash
+devnet/host.sh up     # start it, or recreate it on the current code
+devnet/host.sh logs   # follow its log
+devnet/host.sh down   # stop it; its data and keys stay
+```
+
+`up` runs `spike/host.mjs` in a container made from the pinned alpha PDS image, so `@atproto/pds` is
+exactly that build and nothing is built locally. The container is `grouphost-spike`, in compose
+project `grouphost`, on the devnet's network. The first `up` adds the route
+`https://grouphost.devnet.internal` (port 7070 here) to the devnet's nginx and writes throwaway keys
+to `spike/data/keys.env`. Each `up` waits for the host's health check. The host's accounts and groups
+live on the volume `grouphost-spike-data`. Keep `keys.env`: its rotation key made every group DID the
+host holds.
+
+### 4. Make the test people
+
+The probes sign in as two people on the alpha, `gh-alice.devnet.test` and `gh-bob.devnet.test`. The
+devnet's account tool makes them and keeps their logins in `spike/data/accounts.env` (mode 600, which
+git ignores). A rerun signs in and creates nothing:
+
+```bash
+ACCOUNTS_FILE="$PWD/spike/data/accounts.env" "$DEVNET/scripts/https-account.sh" gh-alice GH_ALICE
+ACCOUNTS_FILE="$PWD/spike/data/accounts.env" "$DEVNET/scripts/https-account.sh" gh-bob GH_BOB
+```
+
+### 5. Run the probes
+
+Run `npm install` in `spike/` once. Then run each probe from there under the devnet's `https-run`,
+which trusts the devnet's CA and resolves its names for that one command:
+
+```bash
+cd spike
+"$DEVNET/scripts/https-run" node probe-day2.mjs   # 7 checks; restarts the host once
+"$DEVNET/scripts/https-run" node probe-day3.mjs   # 8 checks
+"$DEVNET/scripts/https-run" node probe-day4.mjs   # 16 checks
+```
+
+Each prints its checks and ends with a summary and a pass count. `spike/lib.mjs` holds what they
+share. It needs two things outside this repo:
+
+- **A Chromium launcher that trusts the devnet.** `DEVNET_BROWSER` names it. The default is
+  `sandbox/opensocial/devnet-browser.mjs` from the `sandbox/opensocial-lexicons` branch of
+  `tompscanlan/atproto`.
+- **Playwright,** which `lib.mjs` loads from a fixed install path. Change that line on another machine.
+
+The day-2 and day-3 probes rewrite the consent screenshots in `spike/`; `git checkout spike/*.png`
+unless you mean to update them. The first round's `probe.mjs` no longer runs, because the host now
+refuses its setup calls.
+
+### Using the host from an app
+
+- **Where it is:** `https://grouphost.devnet.internal`. atmo reads it from `GROUP_HOST_URL`.
+- **Running the app:** run it under `"$DEVNET/scripts/https-run"`. If the devnet's PDSes must reach
+  the app, for example to fetch its OAuth client metadata, give it a route with
+  `"$DEVNET/scripts/https-app.sh" <name> <port>`; it is then `https://<name>.devnet.internal`.
+- **Group handles:** a group's handle is `<label>.gh.devnet.test`. `https-run` maps only the names it
+  knows when it starts, so for a group made later, start the app with
+  `HTTPS_RUN_EXTRA_NAMES='<label>.gh.devnet.test'`.
+- **Sign-up page:** it opens at the host's loopback address, `http://127.0.0.1:7070/signin/start`.
+  A browser test that filters requests has to let `127.0.0.1:7070` through.
+
+### Restarts and resets
+
+- **A devnet restart** (`https-down.sh`, then `https-up.sh`, no `-v`): nothing to do. The host stays
+  on the devnet's network through it and comes back with its groups.
+- **A Docker restart:** the host has `restart: unless-stopped`, as the devnet's services do, so it
+  should come back on its own. Not tried yet.
+- **After `https-down.sh -v`:** every DID is gone from the devnet's PLC, so the host's groups are dead.
+  Run `devnet/host.sh down`, then `docker volume rm grouphost-spike-data`, and delete
+  `spike/data/accounts.env`. Then do steps 2 to 4 again; the next `up` picks up the new authority.
+- **Removing the host:** run `devnet/host.sh down` and `docker volume rm grouphost-spike-data`. Then
+  delete the `grouphost` line from `$DEVNET/data/https/apps`, and rerun `https-app.sh` for any other
+  app listed there, so nginx reloads its routes.
