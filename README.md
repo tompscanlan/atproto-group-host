@@ -103,7 +103,9 @@ export DEVNET_PROJECT=devnet-mine   # the scripts refuse the shared devnet-space
 ```
 
 Only one https devnet can hold port 443 on a machine, so if one is already up, use it.
-`devnet/host.sh` reads the compose project and the lexicon authority from `$DEVNET/data/devnet.env`.
+`devnet/host.sh` reads the compose project, the lexicon authority and the domain (`DEVNET_DOMAIN`,
+`devnet.test` unless the devnet was given another) from `$DEVNET/data/devnet.env`. The names below
+use `devnet.test`.
 
 ### 2. Publish the group lexicons (a new devnet only)
 
@@ -132,8 +134,10 @@ devnet/host.sh down   # stop it; its data and keys stay
 `up` runs `spike/host.mjs` in a container made from the pinned alpha PDS image, so `@atproto/pds` is
 exactly that build and nothing is built locally. The container is `grouphost-spike`, in compose
 project `grouphost`, on the devnet's network. The first `up` adds the route
-`https://grouphost.devnet.internal` (port 7070 here) to the devnet's nginx and writes throwaway keys
-to `spike/data/keys.env`. Each `up` waits for the host's health check. The host's accounts and groups
+`https://grouphost.devnet.internal` (port 7070 here) to the devnet's nginx, with every name under
+`gh.devnet.test`, where the groups' handles are, and writes throwaway keys to `spike/data/keys.env`.
+Routing the handles needs a devnet with handle endings in `scripts/https-app.sh`; on an older one
+`up` says so, and a group's handle resolves only at the host. Each `up` waits for the host's health check. The host's accounts and groups
 live on the volume `grouphost-spike-data`. Keep `keys.env`: its rotation key made every group DID the
 host holds.
 
@@ -155,7 +159,7 @@ which trusts the devnet's CA and resolves its names for that one command:
 
 ```bash
 cd spike
-"$DEVNET/scripts/https-run" node probe-day2.mjs   # 7 checks; restarts the host once
+"$DEVNET/scripts/https-run" node probe-day2.mjs   # 8 checks; restarts the host once
 "$DEVNET/scripts/https-run" node probe-day3.mjs   # 8 checks
 "$DEVNET/scripts/https-run" node probe-day4.mjs   # 16 checks
 "$DEVNET/scripts/https-run" node probe-signup.mjs # 4 checks; needs a group on the host, so day 2 first
@@ -179,9 +183,10 @@ refuses its setup calls.
 - **Running the app:** run it under `"$DEVNET/scripts/https-run"`. If the devnet's PDSes must reach
   the app, for example to fetch its OAuth client metadata, give it a route with
   `"$DEVNET/scripts/https-app.sh" <name> <port>`; it is then `https://<name>.devnet.internal`.
-- **Group handles:** a group's handle is `<label>.gh.devnet.test`. `https-run` maps only the names it
-  knows when it starts, so for a group made later, start the app with
-  `HTTPS_RUN_EXTRA_NAMES='<label>.gh.devnet.test'`.
+- **Group handles:** a group's handle is `<label>.gh.devnet.test`, and it resolves anywhere on the
+  devnet: the devnet's nginx sends the name to the host, which answers
+  `/.well-known/atproto-did`. `https-run` maps only the names it knows when it starts, so for a group
+  made later, start the app with `HTTPS_RUN_EXTRA_NAMES='<label>.gh.devnet.test'`.
 - **Sign-up page:** it opens at the host's loopback address, `http://127.0.0.1:7070/signin/start`.
   It asks for the group's address and the creator's own handle, not a display name: write the
   group's `profile` after the create to name it.

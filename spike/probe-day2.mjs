@@ -6,10 +6,11 @@
 //   d5  removing a member cuts their existing session on the next request
 //   d6  a refreshed token keeps its person
 //   d7  the token-to-person table survives a host restart
+//   d8  the group's handle resolves through the devnet's nginx, as it would for any client
 // Run: ../../atproto-devnet/scripts/https-run node probe-day2.mjs 2>&1 | tee run-day2.log
 // Logins live in data/accounts.env (mode 600) and are never printed; tokens are never printed.
 import { execFileSync } from 'node:child_process'
-import { HOST, META, MEMBERS, alice, bob, as, listRecords, groupSignIn as signIn, log, sleep, spaceUri, state, summary, verdict } from './lib.mjs'
+import { GROUP_DOMAIN, HOST, META, MEMBERS, alice, bob, as, listRecords, groupSignIn as signIn, log, sleep, spaceUri, state, summary, verdict, wellKnownDid } from './lib.mjs'
 
 // What the app asks for: write the two group spaces, make spaces, and read both. The reads are
 // separate items so a member who may only read still gets them.
@@ -36,7 +37,7 @@ if (A.ok) {
   const has = (r, c, k) => (r.body?.records ?? []).some((x) => x.collection === c && x.rkey === k)
   const ms = (members.body?.records ?? []).find((x) => x.collection === 'group.opensocial.membership' && x.rkey === alice.did)
   const parts = {
-    handle: sess.body?.handle === `${label}.gh.devnet.test`,
+    handle: sess.body?.handle === `${label}${GROUP_DOMAIN}`,
     metaAccess: has(meta, 'group.opensocial.access', 'self'),
     profile: has(meta, 'group.opensocial.profile', 'self'),
     membersAccess: has(members, 'group.opensocial.access', 'self'),
@@ -109,6 +110,13 @@ if (G) {
   const s7 = await A.app.restore(G, { refresh: false })
   const aRead3 = await listRecords(s7, 'alice for the group (after restart)', G, MEMBERS)
   verdict('d7', aRead3.status === 200, `alice's session reads ${aRead3.status} after the host restarted`)
+
+  // ---------- d8 ----------
+  log('\n## d8 the group\'s handle resolves through the devnet\'s nginx\n')
+  const handle = `${label}${GROUP_DOMAIN}`
+  const wk = await wellKnownDid(handle)
+  log(`- GET https://${handle}/.well-known/atproto-did -> ${wk.status} ${wk.body.slice(0, 80)}`)
+  verdict('d8', wk.status === 200 && wk.body === G, `https://${handle}/.well-known/atproto-did, with the devnet's certificate, answers the group's DID (${wk.status})`)
 }
 
 summary()

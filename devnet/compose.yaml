@@ -25,7 +25,7 @@ services:
     environment:
       PDS_PORT: 7070
       PDS_HOSTNAME: grouphost.devnet.internal
-      PDS_SERVICE_HANDLE_DOMAINS: .gh.devnet.test
+      PDS_SERVICE_HANDLE_DOMAINS: .gh.${DEVNET_DOMAIN:?the devnet's domain, from its data/devnet.env}
       PDS_DATA_DIRECTORY: /data
       PDS_BLOBSTORE_DISK_LOCATION: /data/blocks
       PDS_DID_PLC_URL: http://plc:2582
@@ -46,6 +46,7 @@ services:
       HOST_PLC_URL: http://plc:2582
       NODE_EXTRA_CA_CERTS: /https/ca.crt
       NODE_OPTIONS: --require /spike/names.cjs
+      DEVNET_DOMAIN: ${DEVNET_DOMAIN}
     volumes:
       - ${DEVNET:?the atproto-devnet checkout}/data/https/ca.crt:/https/ca.crt:ro
       - ../spike:/spike:ro

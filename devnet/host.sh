@@ -12,8 +12,8 @@
 # (docker volume rm grouphost-spike-data) and spike/data/accounts.env before the next up.
 #
 # DEVNET is the atproto-devnet checkout (default /workspaces/scratch/atproto-devnet). The
-# devnet's compose project and lexicon authority come from its data/devnet.env, which its
-# https-up.sh writes.
+# devnet's compose project, lexicon authority and domain come from its data/devnet.env, which
+# its https-up.sh writes. Groups get handles under gh.<domain>.
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 export DEVNET="${DEVNET:-/workspaces/scratch/atproto-devnet}"
@@ -28,6 +28,9 @@ if [ ! -f "${DENV}" ]; then
 fi
 export DEVNET_PROJECT="${DEVNET_PROJECT:-$(env_get DEVNET_PROJECT "${DENV}")}"
 export LEX_AUTHORITY_DID="${LEX_AUTHORITY_DID:-$(env_get LEX_AUTHORITY_DID "${DENV}")}"
+# The devnet's, not ours to choose; a devnet.env from before the setting means devnet.test.
+DEVNET_DOMAIN="$(env_get DEVNET_DOMAIN "${DENV}")"
+export DEVNET_DOMAIN="${DEVNET_DOMAIN:-devnet.test}"
 dc() { docker compose -f "${HERE}/compose.yaml" "$@"; }
 
 case "${1:-}" in
@@ -51,10 +54,15 @@ up)
      && [ -z "$(docker ps -aq --filter name=^grouphost-spike$ --filter label=com.docker.compose.project=grouphost)" ]; then
     docker rm -f grouphost-spike >/dev/null
   fi
-  # The devnet's nginx sends https://grouphost.devnet.internal to port 7070 here. The route is
-  # kept in the devnet's data/https/apps, so this runs once.
-  if ! grep -qx 'grouphost 7070' "${DEVNET}/data/https/apps" 2>/dev/null; then
-    "${DEVNET}/scripts/https-app.sh" grouphost 7070
+  # The devnet's nginx sends https://grouphost.devnet.internal, and every name under
+  # gh.<domain> (the groups' handles), to port 7070 here. The route is kept in the devnet's
+  # data/https/apps, so this runs once.
+  if ! grep -qx 'grouphost 7070 gh' "${DEVNET}/data/https/apps" 2>/dev/null; then
+    "${DEVNET}/scripts/https-app.sh" grouphost 7070 gh
+  fi
+  # A devnet from before handle endings takes the route and ignores the ending.
+  if ! grep -qx 'grouphost 7070 gh' "${DEVNET}/data/https/apps" 2>/dev/null; then
+    echo "host.sh: ${DEVNET} routes no handles to the host, so group handles resolve only at the host; update the devnet" >&2
   fi
   # Recreate every time: a container stopped while the devnet rebuilt its network cannot start
   # on the old one ("network ... not found").

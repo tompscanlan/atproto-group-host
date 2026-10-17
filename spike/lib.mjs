@@ -1,8 +1,10 @@
 // lib.mjs: what the day-2 and day-3 probes share. Logins live in data/accounts.env (mode 600) and
 // are never printed; tokens are never printed.
 import crypto from 'node:crypto'
+import dns from 'node:dns'
 import fs from 'node:fs'
 import http from 'node:http'
+import https from 'node:https'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { OAuthClient, MemoryStore } from '@atcute/oauth-node-client'
@@ -13,9 +15,16 @@ import {
   WebDidDocumentResolver,
   WellKnownHandleResolver,
 } from '@atcute/identity-resolver'
+const readEnv = (file) =>
+  Object.fromEntries(
+    fs.readFileSync(file, 'utf8').split('\n').filter((l) => /^[A-Z_]+=/.test(l)).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]),
+  )
+// The devnet devnet/host.sh uses, and its own facts (data/devnet.env, which its https-up.sh writes).
+const DEVNET = process.env.DEVNET ?? '/workspaces/scratch/atproto-devnet'
+const DENV = readEnv(path.join(DEVNET, 'data/devnet.env'))
 // A Chromium launcher that trusts the devnet's certificate. Point DEVNET_BROWSER at your own copy.
-// It finds the certificate through DEVNET_CA_FILE, which defaults to the devnet devnet/host.sh uses.
-process.env.DEVNET_CA_FILE ??= path.join(process.env.DEVNET ?? '/workspaces/scratch/atproto-devnet', 'data/https/ca.crt')
+// It finds the certificate through DEVNET_CA_FILE, which defaults to that devnet's.
+process.env.DEVNET_CA_FILE ??= path.join(DEVNET, 'data/https/ca.crt')
 const { launchBrowser } = await import(process.env.DEVNET_BROWSER ?? '/workspaces/scratch/wt-atproto-permissioned-data-ewnj3/sandbox/opensocial/devnet-browser.mjs')
 
 const require = createRequire(import.meta.url)
@@ -23,7 +32,11 @@ const { chromium } = require('/home/node/.local/share/mise/installs/npm-playwrig
 
 export const HERE = path.dirname(new URL(import.meta.url).pathname)
 export const HOST = 'https://grouphost.devnet.internal'
-export const ALPHA = 'https://alpha.devnet.test'
+// Every devnet name sits under the devnet's domain; a devnet.env from before the setting means devnet.test.
+export const DOMAIN = DENV.DEVNET_DOMAIN || 'devnet.test'
+export const ALPHA = DENV.ALPHA_PDS_URL || `https://alpha.${DOMAIN}`
+// A group's handle is <label>.gh.<domain> (devnet/compose.yaml).
+export const GROUP_DOMAIN = `.gh.${DOMAIN}`
 export const META = 'group.opensocial.meta'
 export const MEMBERS = 'group.opensocial.members'
 export const now = () => new Date().toISOString().replace(/\.\d+Z$/, 'Z')
@@ -42,11 +55,24 @@ export function summary() {
   log(`\n${verdicts.filter((v) => v.ok).length}/${verdicts.length} pass`)
 }
 
-const E = Object.fromEntries(
-  fs.readFileSync(path.join(HERE, 'data/accounts.env'), 'utf8').split('\n').filter((l) => /^[A-Z_]+=/.test(l)).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]),
-)
+const E = readEnv(path.join(HERE, 'data/accounts.env'))
 export const alice = { who: 'alice', handle: E.GH_ALICE_HANDLE, password: E.GH_ALICE_PASSWORD, did: E.GH_ALICE_DID }
 export const bob = { who: 'bob', handle: E.GH_BOB_HANDLE, password: E.GH_BOB_PASSWORD, did: E.GH_BOB_DID }
+
+// GET https://<handle>/.well-known/atproto-did as any client on the devnet would, certificate
+// check included. No hosts file lists a new handle, so the name is sent where the alpha's name
+// goes: the devnet's nginx, which picks the server by name.
+const viaNginx = (_name, opts, cb) => dns.lookup(new URL(ALPHA).hostname, opts, cb)
+export const wellKnownDid = (handle) =>
+  new Promise((resolve) => {
+    https
+      .get({ hostname: handle, path: '/.well-known/atproto-did', lookup: viaNginx }, (res) => {
+        let body = ''
+        res.on('data', (c) => (body += c))
+        res.on('end', () => resolve({ status: res.statusCode, body: body.trim() }))
+      })
+      .on('error', (e) => resolve({ status: 0, body: e.code ?? e.message }))
+  })
 
 export const state = async (q) => (await fetch(`${HOST}/spike/state?${new URLSearchParams(q)}`)).json()
 export const spike = async (p, body) =>
@@ -124,7 +150,7 @@ export async function groupSignIn(person, { create, groupDid, label: shot, scope
     await p.fill('input[name=handle]', person.handle)
     typed.push({ origin: new URL(p.url()).origin, field: 'handle' })
     await p.click('button')
-    await p.waitForURL(/alpha\.devnet\.test/, { timeout: 30000 })
+    await p.waitForURL((u) => u.host === new URL(ALPHA).host, { timeout: 30000 })
     await p.waitForSelector('input[name=password]', { timeout: 30000 })
     const user = p.locator('input[name=username]')
     if ((await user.count()) && (await user.isEditable()) && !(await user.inputValue())) await user.fill(person.handle)
