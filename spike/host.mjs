@@ -28,6 +28,8 @@ import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import { PDS, envToCfg, envToSecrets, readEnv } from '/app/packages/pds/dist/index.js'
 import { verifyJwt } from '/app/packages/xrpc-server/dist/auth.js'
+import { reservedSubdomains } from '/app/packages/pds/dist/handle/reserved.js'
+import { hasExplicitSlur } from '/app/packages/pds/dist/handle/explicit-slurs.js'
 import { BlobPermission, RepoPermission, SpacePermission, isAtprotoOauthScope } from '/app/packages/oauth/oauth-scopes/dist/index.js'
 import { TID } from '/app/packages/common-web/dist/index.js'
 import { SpaceRef, isValidNsid, isValidRecordKey } from '/app/packages/syntax/dist/index.js'
@@ -318,13 +320,55 @@ async function groupJwt(did) {
   return (await pds.ctx.accountManager.createSession(did, null)).accessJwt
 }
 
-async function createGroup({ label, displayName, creatorDid }) {
-  const handle = `${label}${cfg.identity.serviceHandleDomains[0]}`
+const HANDLE_DOMAIN = cfg.identity.serviceHandleDomains[0]
+const groupEmail = (label) => `${label}@groups.invalid`
+
+// Why a new group's address cannot be made: a reason, worded for the person in one place.
+const ADDRESS_WORDS = {
+  empty: () => 'Choose an address for the group.',
+  characters: () => 'An address uses only letters, digits and dashes, and does not start or end with a dash.',
+  length: (label) => `An address is 3 to 18 characters long; "${label}" is ${label.length}.`,
+  reserved: (label) => `"${label}" is reserved on this server. Choose another address.`,
+  word: (label) => `"${label}" is not allowed on this server. Choose another address.`,
+  taken: (label) => `${label}${HANDLE_DOMAIN} is taken. Choose another address.`,
+  refused: (label, detail) => `This server will not take "${label}" (${detail}).`,
+}
+const addressRefusal = (reason, label, detail) => ({ reason, text: ADDRESS_WORDS[reason](label, detail) })
+
+// What the PDS's createAccount would refuse in a new group's address, checked before the person
+// goes to their own PDS, so a refusal is said on the sign-in page and the sign-in is not spent.
+// These are the PDS's own checks (account-manager.js normalizeAndValidateHandle, handle/index.js
+// ensureHandleServiceConstraints): 3 to 18 characters before the domain, its reserved names and
+// word filter, a handle and email no account holds. Anything else it refuses, in its own words.
+async function addressProblem(label) {
+  if (!label) return addressRefusal('empty', label)
+  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(label)) return addressRefusal('characters', label)
+  if (label.length < 3 || label.length > 18) return addressRefusal('length', label)
+  const handle = `${label}${HANDLE_DOMAIN}`
+  if (reservedSubdomains[label]) return addressRefusal('reserved', label)
+  if (hasExplicitSlur(handle)) return addressRefusal('word', label)
+  try {
+    await pds.ctx.accountManager.normalizeAndValidateHandle(handle)
+  } catch (err) {
+    return addressRefusal('refused', label, err.message)
+  }
+  const all = { includeDeactivated: true, includeTakenDown: true }
+  const [byHandle, byEmail] = await Promise.all([
+    pds.ctx.accountManager.getAccount(handle, all),
+    pds.ctx.accountManager.getAccountByEmail(groupEmail(label), all),
+  ])
+  return byHandle || byEmail ? addressRefusal('taken', label) : null
+}
+
+// The starting profile's display name is the address. The app that made the group names it: the
+// host's page asks only what the host decides, as a PDS's own sign-up asks only the handle.
+async function createGroup({ label, creatorDid }) {
+  const handle = `${label}${HANDLE_DOMAIN}`
   // The PDS's createAccount needs a password. This one is random, used for the seeding calls
   // below, and dropped: nobody ever sees or holds it. The product should create the account
   // with no password at all.
   const password = crypto.randomBytes(32).toString('base64url')
-  const acct = await xrpc('com.atproto.server.createAccount', { handle, email: `${label}@groups.invalid`, password })
+  const acct = await xrpc('com.atproto.server.createAccount', { handle, email: groupEmail(label), password })
   const did = acct.did
   const jwt = acct.accessJwt
   const now = new Date().toISOString()
@@ -349,7 +393,7 @@ async function createGroup({ label, displayName, creatorDid }) {
       { role: 'member', scopes: [`space:${MEMBERS}?action=read`] },
     ],
   })
-  await put(META, `${NS}.profile`, 'self', { displayName, joinPolicy: 'approval' })
+  await put(META, `${NS}.profile`, 'self', { displayName: label, joinPolicy: 'approval' })
   await put(MEMBERS, `${NS}.permissions`, 'self', {
     grants: [
       {
@@ -401,6 +445,15 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
 
 const outer = express()
 
+// The host's own calls to its PDS carry INTERNAL. The mark comes off the request here, before
+// anything else sees it, so the PDS's request log, which prints every header, never shows it.
+const internalCalls = new WeakSet()
+outer.use((req, res, next) => {
+  if (req.headers['x-grouphost-internal'] === INTERNAL) internalCalls.add(req)
+  delete req.headers['x-grouphost-internal']
+  next()
+})
+
 // did:web for the host itself, naming the endpoint the PDS calls for checkUserAccess.
 outer.get('/.well-known/did.json', (req, res) => {
   res.json({
@@ -430,30 +483,47 @@ outer.get('/oauth/authorize', async (req, res, next) => {
   }
 })
 
-// Ask who you are (your own handle), and for a new group its name, then OAuth to your own PDS.
+// Ask who you are (your own handle), and for a new group its address, then OAuth to your own
+// PDS. A refusal comes back to this page as a line above the form, with what was typed kept and
+// the sign-in still open; `data-reason` names it for a test.
+function startPage(state, p, { problem, label = '', handle = '' } = {}) {
+  const fields =
+    p.mode === 'create'
+      ? `<p><label>Address for the new group: <input name=label value="${esc(label)}" placeholder="mygroup">${esc(HANDLE_DOMAIN)}</label><br><small>3 to 18 letters, digits or dashes.</small></p>`
+      : `<p>Act as group <code>${esc(p.groupDid)}</code>.</p>`
+  return `<!doctype html><title>${p.mode === 'create' ? 'Create a group' : 'Sign in to act as the group'}</title>
+${problem ? `<p id=problem role=alert data-reason="${esc(problem.reason)}">${esc(problem.text)}</p>` : ''}
+<form method=get><input type=hidden name=state value="${esc(state)}">${fields}
+<p>Sign in with your own account: <input name=handle value="${esc(handle)}" placeholder="you.example.com"></p><button>Continue</button></form>`
+}
+
 outer.get('/signin/start', async (req, res, next) => {
   try {
-    const p = pending.get(req.query.state)
+    const state = String(req.query.state ?? '')
+    const p = pending.get(state)
     if (!p) return res.status(400).send('unknown sign-in')
-    if (!req.query.handle) {
-      const createFields =
-        p.mode === 'create'
-          ? `<p>New group name (handle): <input name=label placeholder="mygroup"></p><p>Display name: <input name=displayName placeholder="My Group"></p>`
-          : `<p>Act as group <code>${esc(p.groupDid)}</code>.</p>`
-      return res.type('html').send(`<!doctype html><title>${p.mode === 'create' ? 'Create a group' : 'Sign in to act as the group'}</title>
-<form method=get><input type=hidden name=state value="${esc(req.query.state)}">${createFields}
-<p>Sign in with your own account: <input name=handle placeholder="you.example.com"></p><button>Continue</button></form>`)
+    if (req.query.handle === undefined) {
+      // A first visit, or back from a create that failed after the person signed in.
+      const { problem } = p
+      delete p.problem
+      return res.type('html').send(startPage(state, p, { problem, label: p.label }))
     }
+    const label = String(req.query.label ?? '').trim().toLowerCase()
+    const handle = String(req.query.handle).trim()
+    const again = (problem) => res.status(400).type('html').send(startPage(state, p, { problem, label, handle }))
     if (p.mode === 'create') {
-      p.label = String(req.query.label ?? '').toLowerCase()
-      p.displayName = String(req.query.displayName ?? p.label)
-      if (!/^[a-z0-9][a-z0-9-]{2,30}$/.test(p.label)) return res.status(400).send('group name: 3 to 31 letters, digits or dashes')
+      const problem = await addressProblem(label)
+      if (problem) return again(problem)
+      p.label = label
     }
-    const { url } = await personClient.authorize({
-      target: { type: 'account', identifier: String(req.query.handle) },
-      scope: 'atproto',
-      state: { s: req.query.state },
-    })
+    if (!handle) return again({ reason: 'handle', text: 'Enter your own handle, the account you sign in with.' })
+    let url
+    try {
+      ;({ url } = await personClient.authorize({ target: { type: 'account', identifier: handle }, scope: 'atproto', state: { s: state } }))
+    } catch (err) {
+      log('person sign-in start failed', { handle, err: err.message })
+      return again({ reason: 'handle', text: `Could not find where ${handle} signs in (${err.message}). Check the handle.` })
+    }
     res.redirect(url.toString())
   } catch (err) {
     next(err)
@@ -469,7 +539,19 @@ outer.get('/signin/callback', async (req, res, next) => {
     pending.delete(state?.s)
     if (!p) return res.status(400).send('unknown sign-in')
     // Who may create a group is the host's call; the spike lets anyone signed in.
-    const group = p.mode === 'create' ? await createGroup({ label: p.label, displayName: p.displayName, creatorDid: personDid }) : { did: p.groupDid }
+    let group = { did: p.groupDid }
+    if (p.mode === 'create') {
+      try {
+        group = await createGroup({ label: p.label, creatorDid: personDid })
+      } catch (err) {
+        // Back to the sign-in page with the reason. The app's request is still open, so the person
+        // picks another address there instead of starting again from the app.
+        log('group create failed', { label: p.label, personDid, err: err.message })
+        p.problem = (await addressProblem(p.label)) ?? { reason: 'create', text: `The group could not be made (${err.message}). Try again.` }
+        pending.set(state.s, p)
+        return res.redirect(`${LOOPBACK}/signin/start?${new URLSearchParams({ state: state.s })}`)
+      }
+    }
     const grants = await grantsFor(group.did, personDid)
     log('person signed in through own PDS', { personDid, groupDid: group.did, mode: p.mode, roles: grants.roles })
     if (!grants.roles.length) {
@@ -549,7 +631,7 @@ ${c.dropped.length ? `<p>Not offered, because your roles do not grant it:</p><ul
 // the PDS verifies the same header right after, so a forged token is refused there. Decoding
 // is enough to find the token's person in the host's table.
 function callerOf(req) {
-  if (req.headers['x-grouphost-internal'] === INTERNAL) return { internal: true }
+  if (internalCalls.has(req)) return { internal: true }
   const m = /^(DPoP|Bearer) (\S+)$/.exec(req.headers.authorization || '')
   if (!m) return { none: true }
   let payload
@@ -1070,6 +1152,15 @@ outer.post('/spike/bare-space', async (req, res, next) => {
 
 // ---- everything else: the PDS, unmodified ----
 outer.use(pds.app)
+
+// An error none of the host's routes answered: said in a line, never as a stack trace (the log
+// has the stack). The PDS answers its own errors.
+outer.use((err, req, res, next) => {
+  if (res.headersSent) return next(err)
+  log('unanswered error', req.method, req.path, err?.stack ?? err)
+  if (req.path.startsWith('/xrpc/')) return res.status(500).json({ error: 'InternalServerError', message: err?.message ?? 'Internal Server Error' })
+  res.status(500).type('html').send(`<!doctype html><title>Something went wrong</title><p>Something went wrong: ${esc(err?.message ?? err)}</p>`)
+})
 pds.app = outer
 await pds.start()
 log('listening', cfg.service.port, 'as', PUBLIC_URL)

@@ -36,7 +36,12 @@ all seven, and the third all eight.
    grant now. Removing a member closed their open session on the next request.
 6. **`prompt=create` makes a group.** The creator signs in through their own PDS. The host creates
    the account, the `meta` and `members` spaces, an `access` record in each, a `profile`,
-   `permissions`, the `admin` and `member` roles, and the creator's `admin` membership.
+   `permissions`, the `admin` and `member` roles, and the creator's `admin` membership. Its page
+   asks only for the group's address and the creator's own handle, as a PDS's own sign-up asks only
+   for the handle. It turns down an address the PDS would refuse (over 18 characters, reserved,
+   caught by its word filter, or taken) on that page, before the creator goes to their PDS, so
+   the creator picks another without starting again from the app. The starting `profile` is named
+   after the address; the app names the group by writing the profile.
 7. **The group sign-in is not remembered, and the consent page is the host's.** The ticket sign-in
    uses `remember: false`. The provider then returns a token good for this one request, and the
    host's own consent page uses it. No device stays signed in as the group.
@@ -153,6 +158,7 @@ cd spike
 "$DEVNET/scripts/https-run" node probe-day2.mjs   # 7 checks; restarts the host once
 "$DEVNET/scripts/https-run" node probe-day3.mjs   # 8 checks
 "$DEVNET/scripts/https-run" node probe-day4.mjs   # 16 checks
+"$DEVNET/scripts/https-run" node probe-signup.mjs # 4 checks; needs a group on the host, so day 2 first
 ```
 
 Each prints its checks and ends with a summary and a pass count. `spike/lib.mjs` holds what they
@@ -177,6 +183,8 @@ refuses its setup calls.
   knows when it starts, so for a group made later, start the app with
   `HTTPS_RUN_EXTRA_NAMES='<label>.gh.devnet.test'`.
 - **Sign-up page:** it opens at the host's loopback address, `http://127.0.0.1:7070/signin/start`.
+  It asks for the group's address and the creator's own handle, not a display name: write the
+  group's `profile` after the create to name it.
   A browser test that filters requests has to let `127.0.0.1:7070` through.
 
 ### Restarts and resets

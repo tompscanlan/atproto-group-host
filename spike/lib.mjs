@@ -95,15 +95,31 @@ export async function groupSignIn(person, { create, groupDid, label: shot, scope
   await new Promise((r) => server.listen(CB_PORT, '127.0.0.1', r))
   const browser = await launchBrowser(chromium)
   const typed = []
-  const out = { ok: false, app, typed, kept: [], dropped: [], consentText: null }
+  const out = { ok: false, app, typed, kept: [], dropped: [], consentText: null, refused: [], displayNameFields: null }
   try {
     const p = await (await browser.newContext()).newPage()
     await p.goto(url.toString(), { waitUntil: 'load', timeout: 60000 })
     await p.waitForURL(/127\.0\.0\.1:7070\/signin\/start/, { timeout: 30000 })
     if (create) {
+      // `create.refused`: addresses (or handles) the host should turn down on its own page, tried
+      // first. Each comes back to the page with its reason, and the same sign-in carries on.
+      for (const t of create.refused ?? []) {
+        await p.fill('input[name=label]', t.label)
+        await p.fill('input[name=handle]', t.handle ?? person.handle)
+        await Promise.all([p.waitForEvent('framenavigated', { predicate: (f) => f === p.mainFrame(), timeout: 30000 }), p.click('button')])
+        await p.waitForLoadState('load')
+        const problem = p.locator('#problem')
+        out.refused.push({
+          ...t,
+          onPage: /127\.0\.0\.1:7070\/signin\/start/.test(p.url()),
+          reason: (await problem.count()) ? await problem.getAttribute('data-reason') : null,
+          text: (await problem.count()) ? await problem.innerText() : null,
+        })
+        log(`- ${now()} host page refused ${JSON.stringify(t)}: ${JSON.stringify(out.refused.at(-1))}`)
+      }
+      out.displayNameFields = await p.locator('input[name=displayName]').count()
       await p.fill('input[name=label]', create.label)
-      await p.fill('input[name=displayName]', create.displayName)
-      typed.push({ origin: new URL(p.url()).origin, field: 'new group name and display name' })
+      typed.push({ origin: new URL(p.url()).origin, field: 'new group address' })
     }
     await p.fill('input[name=handle]', person.handle)
     typed.push({ origin: new URL(p.url()).origin, field: 'handle' })

@@ -34,7 +34,7 @@ const said = (r) => `${r.status} ${r.body?.error ?? ''}${r.body?.message ? ` (${
 // ---------- setup: alice creates a group and adds a moderator role ----------
 log('\n## setup: alice creates a group and adds a moderator role\n')
 const label = `d3g${Date.now().toString(36)}`
-const A = await groupSignIn(alice, { create: { label, displayName: 'Day three group' }, label: 'e-consent-alice-create', scopes: SCOPES })
+const A = await groupSignIn(alice, { create: { label }, label: 'e-consent-alice-create', scopes: SCOPES })
 if (!A.ok) {
   verdict('setup', false, 'create flow did not reach the app')
   summary()

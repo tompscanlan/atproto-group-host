@@ -61,7 +61,7 @@ log(`# probe-day5 ${now()}`)
 // ---------- h1 ----------
 log('\n## h1 alice creates a group; admin is granted repo: and blob:\n')
 const label = `d5g${Date.now().toString(36)}`
-const A = await groupSignIn(alice, { create: { label, displayName: 'Day five group' }, scopes: SCOPES })
+const A = await groupSignIn(alice, { create: { label }, scopes: SCOPES })
 if (!A.ok) {
   verdict('setup', false, 'create flow did not reach the app')
   summary()

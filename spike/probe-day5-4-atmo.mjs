@@ -47,7 +47,7 @@ log(`# probe-day5-4-atmo ${now()} atmo ${ATMO_WEB}`)
 // ---------- h0: the sign-up ----------
 log('\n## h0 alice signs up a group at the host with the scope atmo asks for\n')
 const label = `d54g${Date.now().toString(36)}`
-const A = await groupSignIn(alice, { create: { label, displayName: FIELDS.name }, scopes: SCOPES })
+const A = await groupSignIn(alice, { create: { label }, scopes: SCOPES })
 if (!A.ok) {
   verdict('setup', false, 'the sign-up did not reach the app')
   summary()

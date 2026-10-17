@@ -65,7 +65,7 @@ const ts = () => new Date().toISOString()
 // ---------- setup: alice creates a group (joinPolicy approval, roles admin and member) ----------
 log('\n## setup: alice creates a group\n')
 const label = `d4g${Date.now().toString(36)}`
-const A = await groupSignIn(alice, { create: { label, displayName: 'Day four group' }, scopes: SCOPES })
+const A = await groupSignIn(alice, { create: { label }, scopes: SCOPES })
 if (!A.ok) {
   verdict('setup', false, 'create flow did not reach the app')
   summary()

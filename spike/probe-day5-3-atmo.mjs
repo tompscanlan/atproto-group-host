@@ -30,7 +30,7 @@ const env = { GROUP_HOST_URL: HOST }
 log(`# probe-day5-3-atmo ${now()} atmo ${ATMO_WEB}`)
 async function makeGroup(name, joinPolicy) {
   const label = `d53${joinPolicy.slice(0, 1)}${Date.now().toString(36)}`
-  const A = await groupSignIn(alice, { create: { label, displayName: name }, scopes: ALICE_SCOPES })
+  const A = await groupSignIn(alice, { create: { label }, scopes: ALICE_SCOPES })
   if (!A.ok) throw new Error(`alice could not create ${name}`)
   const did = A.session.did
   const put = await as(A.session, `alice for ${name}`, 'POST', 'com.atproto.space.putRecord', {

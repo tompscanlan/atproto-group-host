@@ -26,7 +26,7 @@ const groupSignIn = (person, opts) => signIn(person, { ...opts, label: `d-consen
 // ---------- d1: create ----------
 log('\n## d1 prompt=create makes a group, and the app gets its session\n')
 const label = `d2g${Date.now().toString(36)}`
-const A = await groupSignIn(alice, { create: { label, displayName: 'Day two group' }, label: 'alice-create' })
+const A = await groupSignIn(alice, { create: { label }, label: 'alice-create' })
 const G = A.session?.did
 let d1ok = false
 if (A.ok) {
