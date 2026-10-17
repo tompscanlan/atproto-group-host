@@ -41,12 +41,15 @@ up)
   fi
   mkdir -p "$(dirname "${KEYS}")"
   if [ ! -f "${KEYS}" ]; then
+    # The umask has to hold where the file is made, so the redirect is inside.
     (
       umask 077
-      echo "PDS_JWT_SECRET=$(openssl rand -hex 32)"
-      echo "PDS_ADMIN_PASSWORD=$(openssl rand -hex 16)"
-      echo "PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX=$(openssl rand -hex 32)"
-    ) > "${KEYS}"
+      {
+        echo "PDS_JWT_SECRET=$(openssl rand -hex 32)"
+        echo "PDS_ADMIN_PASSWORD=$(openssl rand -hex 16)"
+        echo "PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX=$(openssl rand -hex 32)"
+      } > "${KEYS}"
+    )
   fi
   docker volume create grouphost-spike-data >/dev/null
   # A container of that name from before this script (spike/run-host.sh) is not compose's.
