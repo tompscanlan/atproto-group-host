@@ -31,6 +31,9 @@ const require = createRequire(import.meta.url)
 const { chromium } = require('/home/node/.local/share/mise/installs/npm-playwright/1.63.0/node_modules/playwright')
 
 export const HERE = path.dirname(new URL(import.meta.url).pathname)
+// A run's screenshots go in a folder of their own, so no run writes over another's or over the
+// ones committed in spike/.
+const SHOTS = path.join(HERE, 'shots', `${new Date().toISOString().replace(/[:.]/g, '-')}-${path.basename(process.argv[1] ?? 'run', '.mjs')}`)
 export const HOST = 'https://grouphost.devnet.internal'
 // Every devnet name sits under the devnet's domain; a devnet.env from before the setting means devnet.test.
 export const DOMAIN = DENV.DEVNET_DOMAIN || 'devnet.test'
@@ -164,7 +167,11 @@ export async function groupSignIn(person, { create, groupDid, label: shot, scope
         out.kept = await p.locator('#kept li').allInnerTexts()
         out.dropped = await p.locator('#dropped li').allInnerTexts()
         log(`- ${now()} host consent: ${out.consentText.slice(0, 900)}`)
-        if (shot) await p.screenshot({ path: path.join(HERE, `${shot}.png`), fullPage: true })
+        if (shot) {
+          const file = path.join(SHOTS, `${shot}.png`)
+          await p.screenshot({ path: file, fullPage: true })
+          log(`- ${now()} screenshot ${path.relative(HERE, file)}`)
+        }
         await p.click('#go')
         await p.waitForTimeout(1500)
         continue

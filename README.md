@@ -174,8 +174,9 @@ share. It needs two things outside this repo:
   `tompscanlan/atproto`.
 - **Playwright,** which `lib.mjs` loads from a fixed install path. Change that line on another machine.
 
-The day-2 and day-3 probes rewrite the consent screenshots in `spike/`; `git checkout spike/*.png`
-unless you mean to update them. The first round's `probe.mjs` no longer runs, because the host now
+The day-2 and day-3 probes save consent screenshots under `spike/shots/<time>-<probe>/`, a folder per
+run that git ignores, so a run never overwrites an earlier one or the committed shots in `spike/`. To
+update a committed shot, copy the new one over it on purpose. The first round's `probe.mjs` no longer runs, because the host now
 refuses its setup calls.
 
 ### Using the host from an app
