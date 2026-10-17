@@ -80,8 +80,14 @@ const saved = fs.existsSync(STATE_FILE) ? JSON.parse(fs.readFileSync(STATE_FILE,
 const tokenPerson = new Map(Object.entries(saved.tokenPerson ?? {})) // tokenId -> { groupDid, personDid|null, via }
 // Pending join requests are the host's own state, not records (proposal.md:222-226).
 const joinRequests = new Map(Object.entries(saved.joinRequests ?? {})) // `${group} ${member}` -> { group, member, createdAt, message? }
+// Creates under way: noted before the account is made and dropped once the creator's membership
+// is written, so a create the process did not live to finish is found at the next start.
+const creates = new Map(Object.entries(saved.creates ?? {})) // handle -> { handle, creatorDid, startedAt, did? }
 const persist = () =>
-  fs.writeFileSync(STATE_FILE, JSON.stringify({ tokenPerson: Object.fromEntries(tokenPerson), joinRequests: Object.fromEntries(joinRequests) }))
+  fs.writeFileSync(
+    STATE_FILE,
+    JSON.stringify({ tokenPerson: Object.fromEntries(tokenPerson), joinRequests: Object.fromEntries(joinRequests), creates: Object.fromEntries(creates) }),
+  )
 const methodCalls = [] // every group method call: who, which audience, what came of it (capped)
 
 // ---- (a) the PDS as a library ----
@@ -360,17 +366,58 @@ async function addressProblem(label) {
   return byHandle || byEmail ? addressRefusal('taken', label) : null
 }
 
+// A create that fails once its account exists removes the account, so the address is free again
+// and no group is left without an admin. `afterAccount` is the probes' way to cut it short there
+// (/spike/interrupted-create).
+async function createGroup({ label, creatorDid, afterAccount }) {
+  const handle = `${label}${HANDLE_DOMAIN}`
+  creates.set(handle, { handle, creatorDid, startedAt: new Date().toISOString() })
+  persist()
+  let did
+  try {
+    // The PDS's createAccount needs a password. This one is random, used for the seeding calls
+    // below, and dropped: nobody ever sees or holds it. The product should create the account
+    // with no password at all.
+    const password = crypto.randomBytes(32).toString('base64url')
+    const acct = await xrpc('com.atproto.server.createAccount', { handle, email: groupEmail(label), password })
+    did = acct.did
+    creates.set(handle, { ...creates.get(handle), did })
+    persist()
+    await afterAccount?.(did)
+    await seedRecords(did, acct.accessJwt, { label, creatorDid })
+  } catch (err) {
+    try {
+      if (did) await removeGroupAccount(did, `create failed: ${err.message}`)
+      creates.delete(handle)
+      persist()
+    } catch (cleanup) {
+      // The note stays, so the next start removes it.
+      log('could not remove a half-made group', { handle, did, err: cleanup.message })
+    }
+    throw err
+  }
+  creates.delete(handle)
+  persist()
+  log('group created', { did, handle, creatorDid })
+  return { did, handle }
+}
+
+// Removes a group the host made but did not finish, as the PDS's own admin deleteAccount does: the
+// account first, then the deletion event, then its files (its spaces are in them).
+async function removeGroupAccount(did, why) {
+  await pds.ctx.accountManager.deleteAccount(did)
+  try {
+    await pds.ctx.sequencer.sequenceAccountDeletion(did)
+  } finally {
+    await pds.ctx.actorStore.destroy(did)
+  }
+  log('half-made group removed', { did, why })
+}
+
+// The group's starting records, the creator's membership last.
 // The starting profile's display name is the address. The app that made the group names it: the
 // host's page asks only what the host decides, as a PDS's own sign-up asks only the handle.
-async function createGroup({ label, creatorDid }) {
-  const handle = `${label}${HANDLE_DOMAIN}`
-  // The PDS's createAccount needs a password. This one is random, used for the seeding calls
-  // below, and dropped: nobody ever sees or holds it. The product should create the account
-  // with no password at all.
-  const password = crypto.randomBytes(32).toString('base64url')
-  const acct = await xrpc('com.atproto.server.createAccount', { handle, email: groupEmail(label), password })
-  const did = acct.did
-  const jwt = acct.accessJwt
+async function seedRecords(did, jwt, { label, creatorDid }) {
   const now = new Date().toISOString()
   for (const type of [META, MEMBERS]) {
     await xrpc('com.atproto.simplespace.createSpace', { spaceType: type, skey: 'self', readPolicy: MA, writePolicy: MA, appAccess: { $type: 'com.atproto.simplespace.defs#open' } }, jwt)
@@ -417,8 +464,32 @@ async function createGroup({ label, creatorDid }) {
     ],
   })
   await put(MEMBERS, `${NS}.membership`, creatorDid, { member: creatorDid, roles: ['admin'], createdAt: now })
-  log('group created', { did, handle, creatorDid })
-  return { did, handle }
+}
+
+// Whether a create got as far as its last record, the creator's membership.
+const createFinished = (did, creatorDid) =>
+  pds.ctx.actorStore.read(did, async (actor) =>
+    (await actor.space.listRecords(spaceUri(did, MEMBERS), { limit: 100, collection: `${NS}.membership` })).some((r) => r.rkey === creatorDid),
+  )
+
+// A create the last run did not finish: its account is removed, unless the create got as far as
+// the creator's membership and only the note was left. Without the new DID (the process stopped
+// before it was noted), the account found by the address counts only if it was made after the
+// note, so a group that already held the address is never taken for a half-made one.
+async function settleInterruptedCreates() {
+  for (const c of [...creates.values()]) {
+    try {
+      const account = await pds.ctx.accountManager.getAccount(c.did ?? c.handle)
+      const ours = account && (c.did || account.createdAt >= c.startedAt)
+      if (ours && !(await createFinished(account.did, c.creatorDid).catch(() => false))) {
+        await removeGroupAccount(account.did, 'create interrupted')
+      }
+      creates.delete(c.handle)
+    } catch (err) {
+      log('could not settle an interrupted create', { handle: c.handle, err: err.message })
+    }
+  }
+  persist()
 }
 
 // ---- sign-in through the person's own PDS ----
@@ -818,6 +889,46 @@ outer.post(
   },
 )
 
+// The declaration comes down when the meta space stops being public: the lexicon has a group
+// publish it only while meta is public (declaration.json). Going public leaves it to the group's
+// app, since a public group may stay unlisted (proposal.md: groups that wish to be discoverable
+// may publish one; TS, 2026-10-17). It is done before the write's answer goes back, so an app that
+// reads after its save sees the two in step.
+const DECLARATION = `${NS}.declaration`
+outer.post(SPACE_WRITES.map((n) => `/xrpc/com.atproto.space.${n}`), async (req, res, next) => {
+  try {
+    const body = req.body ?? {}
+    const group = body.repo
+    const writes = req.path.endsWith('.applyWrites') ? (body.writes ?? []) : [body]
+    const touchesMetaAccess = body.space === spaceUri(group, META) && writes.some((w) => w.collection === `${NS}.access` && w.rkey === 'self')
+    if (!touchesMetaAccess || !(await isHosted(group))) return next()
+    const end = res.end
+    res.end = function (...args) {
+      if (res.statusCode < 200 || res.statusCode >= 300) return end.apply(this, args)
+      followMetaAccess(group)
+        .catch((err) => log('declaration not brought down', { group, err: err.message }))
+        .finally(() => end.apply(this, args))
+      return this
+    }
+    next()
+  } catch (err) {
+    next(err)
+  }
+})
+
+async function followMetaAccess(group) {
+  const access = await pds.ctx.actorStore.read(group, async (actor) =>
+    (await actor.space.listRecords(spaceUri(group, META), { limit: 100, collection: `${NS}.access` })).find((r) => r.rkey === 'self'),
+  )
+  if (access?.value?.public === true) return
+  const declaration = { repo: group, collection: DECLARATION, rkey: 'self' }
+  const held = await fetch(`${LOOPBACK}/xrpc/com.atproto.repo.getRecord?${new URLSearchParams(declaration)}`)
+  if (held.status === 400) return // none to bring down (RecordNotFound)
+  if (!held.ok) throw new Error(`reading the declaration: ${held.status}`)
+  await xrpc('com.atproto.repo.deleteRecord', declaration, await groupJwt(group))
+  log('declaration brought down: the meta space is not public', { group })
+}
+
 // Nobody reconfigures a group space through simplespace, the group's own sessions included: a
 // space's policy follows its `access` record, and only the host changes it.
 const SIMPLESPACE_CHANGES = ['createSpace', 'updateSpace', 'deleteSpace', 'putMember', 'removeMember']
@@ -1137,6 +1248,7 @@ outer.get('/spike/state', async (req, res) => {
     joinRequests: [...joinRequests.values()].filter((r) => !group || r.group === group),
     methodCalls: methodCalls.filter((c) => !group || c.group === group),
     spaces: group && (await isHosted(group)) ? (await readGroup(group)).spaces : null,
+    creates: [...creates.values()],
   })
 })
 // A space of the group with no access record, for testing the undeclared-space refusal.
@@ -1145,6 +1257,29 @@ outer.post('/spike/bare-space', async (req, res, next) => {
     const { group, skey } = req.body
     await xrpc('com.atproto.simplespace.createSpace', { spaceType: META, skey, readPolicy: MA, writePolicy: MA, appAccess: { $type: 'com.atproto.simplespace.defs#open' } }, await groupJwt(group))
     res.json({ space: spaceUri(group, META, skey) })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// A create cut short once its account exists. `fail` throws there, so the create's own clean-up
+// runs; `hang` never goes on, so the create is cut by restarting the host, as a crash would cut it.
+outer.post('/spike/interrupted-create', async (req, res, next) => {
+  try {
+    const { label, creatorDid, how } = req.body
+    if (how === 'fail') {
+      let did = null
+      const cut = (d) => {
+        did = d
+        throw new Error('cut short after the account, by a probe')
+      }
+      const error = await createGroup({ label, creatorDid, afterAccount: cut }).then(() => null, (err) => err.message)
+      return res.json({ did, error })
+    }
+    let reached
+    const did = new Promise((resolve) => (reached = resolve))
+    const run = createGroup({ label, creatorDid, afterAccount: (d) => (reached(d), new Promise(() => {})) })
+    res.json({ did: await Promise.race([did, run]) })
   } catch (err) {
     next(err)
   }
@@ -1163,4 +1298,5 @@ outer.use((err, req, res, next) => {
 })
 pds.app = outer
 await pds.start()
+await settleInterruptedCreates()
 log('listening', cfg.service.port, 'as', PUBLIC_URL)

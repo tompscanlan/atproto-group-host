@@ -163,6 +163,7 @@ cd spike
 "$DEVNET/scripts/https-run" node probe-day3.mjs   # 8 checks
 "$DEVNET/scripts/https-run" node probe-day4.mjs   # 16 checks
 "$DEVNET/scripts/https-run" node probe-signup.mjs # 4 checks; needs a group on the host, so day 2 first
+"$DEVNET/scripts/https-run" node probe-in-step.mjs # 6 checks; restarts the host once
 ```
 
 Each prints its checks and ends with a summary and a pass count. `spike/lib.mjs` holds what they
