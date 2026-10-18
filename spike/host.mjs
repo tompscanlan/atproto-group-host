@@ -1347,7 +1347,18 @@ outer.use((err, req, res, next) => {
   if (req.path.startsWith('/xrpc/')) return res.status(500).json({ error: 'InternalServerError', message: err?.message ?? 'Internal Server Error' })
   res.status(500).type('html').send(`<!doctype html><title>Something went wrong</title><p>Something went wrong: ${esc(err?.message ?? err)}</p>`)
 })
-pds.app = outer
+// pds.start() listens with pds.app.listen, which @atproto/xrpc-server wraps to attach the
+// websocket upgrade for subscriptions (com.atproto.sync.subscribeRepos, the relay's feed). So the
+// PDS's own app does the listening, and the server it makes hands every request to outer, in the
+// same tick and before any request can arrive. Listening with outer instead drops the upgrade
+// handler: a relay's subscribeRepos then falls through as a plain GET and gets AuthMissing.
+const listenWithUpgrades = pds.app.listen
+pds.app.listen = (...args) => {
+  const server = listenWithUpgrades(...args)
+  server.removeAllListeners('request')
+  server.on('request', outer)
+  return server
+}
 await pds.start()
 await settleInterruptedCreates()
 log('listening', cfg.service.port, 'as', PUBLIC_URL)
