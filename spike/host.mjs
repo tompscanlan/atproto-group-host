@@ -33,7 +33,7 @@ import { hasExplicitSlur } from '/app/packages/pds/dist/handle/explicit-slurs.js
 import { BlobPermission, RepoPermission, SpacePermission, isAtprotoOauthScope } from '/app/packages/oauth/oauth-scopes/dist/index.js'
 import { TID } from '/app/packages/common-web/dist/index.js'
 import { SpaceRef, isValidDid, isValidNsid, isValidRecordKey } from '/app/packages/syntax/dist/index.js'
-import { OAuthClient, MemoryStore } from '@atcute/oauth-node-client'
+import { OAuthClient, OAuthCallbackError, MemoryStore } from '@atcute/oauth-node-client'
 import {
   CompositeDidDocumentResolver,
   LocalActorResolver,
@@ -499,6 +499,9 @@ async function settleInterruptedCreates() {
 // has said who the person is. A host that keeps the person's session would be a confidential
 // client, with a key.
 const CLIENT_ID = `${PUBLIC_URL}/signin/client-metadata.json`
+// Kept by name so the callback can find whose sign-in a refusal belongs to: the client drops the
+// state before it throws a refusal, and the refusal carries only the state's id.
+const personStates = new MemoryStore({ ttl: 600_000 })
 const actorResolver = new LocalActorResolver({
   handleResolver: new WellKnownHandleResolver(),
   didDocumentResolver: new CompositeDidDocumentResolver({
@@ -514,7 +517,7 @@ const personClient = new OAuthClient({
     scope: 'atproto',
   },
   actorResolver,
-  stores: { sessions: new MemoryStore(), states: new MemoryStore({ ttl: 600_000 }) },
+  stores: { sessions: new MemoryStore(), states: personStates },
 })
 
 async function groupDidOf(hint) {
@@ -655,7 +658,17 @@ outer.get('/signin/start', async (req, res, next) => {
 outer.get('/signin/callback', async (req, res, next) => {
   try {
     const params = new URLSearchParams(req.url.split('?')[1])
-    const { session, state } = await personClient.callback(params)
+    const stored = await personStates.get(params.get('state') ?? '')
+    let session, state
+    try {
+      ;({ session, state } = await personClient.callback(params))
+    } catch (err) {
+      // The person said no at their own PDS: the app's request ends the same way, as a refusal.
+      if (err instanceof OAuthCallbackError && err.error === 'access_denied') {
+        return await refuseToApp(res, stored?.userState?.s, err.errorDescription)
+      }
+      throw err
+    }
     const personDid = session.did
     const p = pending.get(state?.s)
     pending.delete(state?.s)
@@ -703,6 +716,27 @@ outer.get('/signin/callback', async (req, res, next) => {
     next(err)
   }
 })
+
+// Ends the app's open request with access_denied at the app's redirect, as the provider does when
+// someone refuses on its own consent page (RFC 6749 4.1.2.1, with iss per RFC 9207). Without the
+// app's request to answer, the person gets a page saying so instead.
+async function refuseToApp(res, s, description) {
+  const p = s ? pending.get(s) : undefined
+  if (s) pending.delete(s)
+  const data = p ? await store.readRequest(reqId(p.requestUri)) : null
+  const q = data?.parameters
+  if (!q?.redirect_uri) {
+    return res.status(400).type('html').send('<!doctype html><title>Sign-in cancelled</title><p>Sign-in cancelled. Go back to the app to start again.</p>')
+  }
+  await store.deleteRequest(reqId(p.requestUri))
+  log('person refused at their own PDS', { clientId: p.clientId, mode: p.mode })
+  const answer = new URLSearchParams({ error: 'access_denied', error_description: description ?? 'The sign-in was cancelled', iss: provider.issuer ?? PUBLIC_URL })
+  if (q.state) answer.set('state', q.state)
+  const to = new URL(q.redirect_uri)
+  if (q.response_mode === 'fragment') to.hash = answer.toString()
+  else for (const [k, v] of answer) to.searchParams.set(k, v)
+  res.redirect(to.toString())
+}
 
 // Served AT /oauth/authorize so the provider's API accepts the calls (it requires the authorize
 // page as referrer, same-origin fetch and the CSRF cookie/header pair). The ticket sign-in is

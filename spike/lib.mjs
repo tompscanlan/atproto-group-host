@@ -111,8 +111,9 @@ const newApp = (scopes) =>
 // One trip through the browser: the app asks the host, the person signs in at their own PDS,
 // and the host's consent page is read and approved. `hints` go on the authorization URL the
 // browser opens, as an app puts them (gh_name, gh_person); the start page's fields are read into
-// `start` before anything is typed, and `stopAtStart` ends the trip there.
-export async function groupSignIn(person, { create, groupDid, label: shot, scopes, hints, stopAtStart }) {
+// `start` before anything is typed, and `stopAtStart` ends the trip there. `refuseOwn` presses
+// Deny access on the person's own PDS instead, and the trip ends at whatever the app is sent back.
+export async function groupSignIn(person, { create, groupDid, label: shot, scopes, hints, stopAtStart, refuseOwn }) {
   const app = newApp(scopes)
   const { url } = await app.authorize({
     target: create ? { type: 'pds', serviceUrl: HOST } : { type: 'account', identifier: groupDid },
@@ -196,8 +197,9 @@ export async function groupSignIn(person, { create, groupDid, label: shot, scope
       }
       const btn = p.getByRole('button', { name: /^(accept|authorize|allow)/i }).first()
       if (origin !== HOST && (await btn.isVisible().catch(() => false))) {
-        log(`- ${now()} consent at ${origin} (own account, atproto only)`)
-        await btn.click()
+        log(`- ${now()} consent at ${origin} (own account, atproto only)${refuseOwn ? ': Deny access' : ''}`)
+        if (refuseOwn) await p.getByRole('button', { name: /^deny/i }).first().click()
+        else await btn.click()
         await p.waitForTimeout(1500)
         continue
       }
@@ -209,7 +211,9 @@ export async function groupSignIn(person, { create, groupDid, label: shot, scope
       await p.waitForTimeout(500)
     }
     log(`- fields typed: ${JSON.stringify(typed)}`)
-    if (!cbUrl) return out
+    out.cbUrl = cbUrl
+    out.lastPage = { url: p.url().split('?')[0], body: (await p.locator('body').innerText().catch(() => '')).replace(/\s+/g, ' ').slice(0, 300) }
+    if (!cbUrl || refuseOwn) return out
     const { session } = await app.callback(new URL(cbUrl).searchParams)
     return { ...out, ok: true, session }
   } finally {
