@@ -107,15 +107,18 @@ const newApp = (scopes) =>
   })
 
 // One trip through the browser: the app asks the host, the person signs in at their own PDS,
-// and the host's consent page is read and approved.
-export async function groupSignIn(person, { create, groupDid, label: shot, scopes }) {
+// and the host's consent page is read and approved. `hints` go on the authorization URL the
+// browser opens, as an app puts them (gh_name, gh_person); the start page's fields are read into
+// `start` before anything is typed, and `stopAtStart` ends the trip there.
+export async function groupSignIn(person, { create, groupDid, label: shot, scopes, hints, stopAtStart }) {
   const app = newApp(scopes)
   const { url } = await app.authorize({
     target: create ? { type: 'pds', serviceUrl: HOST } : { type: 'account', identifier: groupDid },
     scope: scopes.join(' '),
     ...(create ? { prompt: 'create' } : {}),
   })
-  log(`- ${now()} app PAR at ${url.origin} (${create ? 'prompt=create' : 'group ' + groupDid}) ok`)
+  for (const [k, v] of Object.entries(hints ?? {})) url.searchParams.set(k, v)
+  log(`- ${now()} app PAR at ${url.origin} (${create ? 'prompt=create' : 'group ' + groupDid}) ok${hints ? `; hints ${Object.keys(hints).join(', ')}` : ''}`)
   let cbUrl = null
   const server = http.createServer((rq, rs) => {
     cbUrl = `http://127.0.0.1:${CB_PORT}${rq.url}`
@@ -124,11 +127,23 @@ export async function groupSignIn(person, { create, groupDid, label: shot, scope
   await new Promise((r) => server.listen(CB_PORT, '127.0.0.1', r))
   const browser = await launchBrowser(chromium)
   const typed = []
-  const out = { ok: false, app, typed, kept: [], dropped: [], consentText: null, refused: [], displayNameFields: null }
+  const out = { ok: false, app, typed, kept: [], dropped: [], consentText: null, refused: [], displayNameFields: null, start: null }
   try {
     const p = await (await browser.newContext()).newPage()
     await p.goto(url.toString(), { waitUntil: 'load', timeout: 60000 })
     await p.waitForURL(/127\.0\.0\.1:7070\/signin\/start/, { timeout: 30000 })
+    // What the start page holds before anything is typed, and what markup it carries.
+    const value = async (name) => ((await p.locator(`input[name=${name}]`).count()) ? await p.locator(`input[name=${name}]`).inputValue() : null)
+    out.start = {
+      label: await value('label'),
+      handle: await value('handle'),
+      inputs: await p.locator('input').count(),
+      scripts: await p.locator('script').count(),
+      images: await p.locator('img').count(),
+      ran: await p.evaluate(() => window.__hinted ?? null),
+    }
+    log(`- ${now()} start page fields before typing: ${JSON.stringify(out.start)}`)
+    if (stopAtStart) return out
     if (create) {
       // `create.refused`: addresses (or handles) the host should turn down on its own page, tried
       // first. Each comes back to the page with its reason, and the same sign-in carries on.
