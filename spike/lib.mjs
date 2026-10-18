@@ -28,7 +28,7 @@ process.env.DEVNET_CA_FILE ??= path.join(DEVNET, 'data/https/ca.crt')
 const { launchBrowser } = await import(process.env.DEVNET_BROWSER ?? './devnet-browser.mjs')
 
 const require = createRequire(import.meta.url)
-const { chromium } = require('/home/node/.local/share/mise/installs/npm-playwright/1.63.0/node_modules/playwright')
+const { chromium } = require(process.env.PLAYWRIGHT_DIR ?? '/home/node/.local/share/mise/installs/npm-playwright/1.63.0/node_modules/playwright')
 
 export const HERE = path.dirname(new URL(import.meta.url).pathname)
 // A run's screenshots go in a folder of their own, so no run writes over another's or over the

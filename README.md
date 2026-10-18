@@ -166,6 +166,7 @@ cd spike
 "$DEVNET/scripts/https-run" node probe-hints.mjs  # 9 checks; the hints on the link; needs a group, so day 2 first
 "$DEVNET/scripts/https-run" node probe-in-step.mjs # 6 checks; restarts the host once
 "$DEVNET/scripts/https-run" node probe-public-signin.mjs # 2 checks; the sign-in runs by name alone
+DEVNET=$DEVNET DEVNET_PROJECT=$DEVNET_PROJECT ./remote-signin.sh # the same probe from a container with its own network, as a browser on another machine
 ```
 
 Each prints its checks and ends with a summary and a pass count. `spike/lib.mjs` holds what they

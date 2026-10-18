@@ -40,5 +40,7 @@ export async function launchBrowser(chromium) {
     `--host-resolver-rules=${names.map((n) => `MAP ${n} ${bind}`).join(', ')}`,
     `--ignore-certificate-errors-spki-list=${leafSpki(leafFile())}`,
   ]
+  // A container that runs as root cannot use Chromium's sandbox (CHROMIUM_NO_SANDBOX=1 there).
+  if (process.env.CHROMIUM_NO_SANDBOX) args.push('--no-sandbox')
   return chromium.launch({ args })
 }
