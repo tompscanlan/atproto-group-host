@@ -165,6 +165,7 @@ cd spike
 "$DEVNET/scripts/https-run" node probe-signup.mjs # 4 checks; needs a group on the host, so day 2 first
 "$DEVNET/scripts/https-run" node probe-hints.mjs  # 9 checks; the hints on the link; needs a group, so day 2 first
 "$DEVNET/scripts/https-run" node probe-in-step.mjs # 6 checks; restarts the host once
+"$DEVNET/scripts/https-run" node probe-public-signin.mjs # 2 checks; the sign-in runs by name alone
 ```
 
 Each prints its checks and ends with a summary and a pass count. `spike/lib.mjs` holds what they
@@ -190,8 +191,10 @@ refuses its setup calls.
   devnet: the devnet's nginx sends the name to the host, which answers
   `/.well-known/atproto-did`. `https-run` maps only the names it knows when it starts, so for a group
   made later, start the app with `HTTPS_RUN_EXTRA_NAMES='<label>.gh.devnet.test'`.
-- **Sign-up page:** it opens at the host's loopback address, `http://127.0.0.1:7070/signin/start`.
-  It asks for the group's address and the creator's own handle, not a display name: write the
+- **Sign-up page:** it opens at the host's own name, `https://grouphost.devnet.internal/signin/start`, so
+  it works from any browser that can reach the host, not only one on the host's machine. The host signs
+  people in as a public web client whose id is `https://grouphost.devnet.internal/signin/client-metadata.json`
+  (authentication only, scope `atproto`, no key). It asks for the group's address and the creator's own handle, not a display name: write the
   group's `profile` after the create to name it.
 - **Hints for that page:** an app may add `gh_name` (the group's name as the person typed it, a
   create only) and `gh_person` (the person's DID) to the authorization URL it sends the browser to;
@@ -202,7 +205,15 @@ refuses its setup calls.
   256 characters, a DID over 2048 or malformed, or one that does not resolve leaves its field empty.
   A hint is never trusted: the creator is whoever signs in at their own PDS. This is our own
   addition; the proposal is silent on it.
-  A browser test that filters requests has to let `127.0.0.1:7070` through.
+
+### A second host beside the shared one
+
+`devnet/host.sh` also runs a host for a second copy of the devnet (another checkout, another compose
+project and domain, `DEVNET_BIND` for the address its nginx listens on). Set `DEVNET` to that copy and
+`HOST_PROJECT`, `HOST_CONTAINER`, `HOST_VOLUME` and `HOST_PORT` to names and a port the shared host does
+not use; the defaults are the shared host's. Give the probes the same `HOST_CONTAINER`, and `DEVNET_BIND`
+and `DEVNET_DOMAIN` for their browser (`spike/devnet-browser.mjs`). `probe-public-signin.mjs` checks that
+the sign-in ran by name alone.
 
 ### Restarts and resets
 

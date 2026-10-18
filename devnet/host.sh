@@ -17,6 +17,9 @@
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 export DEVNET="${DEVNET:-/workspaces/scratch/atproto-devnet}"
+# A second host beside the shared one (a copy of the devnet under another domain) sets
+# HOST_PROJECT, HOST_CONTAINER, HOST_VOLUME and HOST_PORT; the defaults are the shared host's.
+export HOST_PORT="${HOST_PORT:-7070}"
 DENV="${DEVNET}/data/devnet.env"
 KEYS="${HERE}/../spike/data/keys.env"
 
@@ -51,7 +54,7 @@ up)
       } > "${KEYS}"
     )
   fi
-  docker volume create grouphost-spike-data >/dev/null
+  docker volume create "${HOST_VOLUME:-grouphost-spike-data}" >/dev/null
   # A container of that name from before this script (spike/run-host.sh) is not compose's.
   if [ -n "$(docker ps -aq --filter name=^grouphost-spike$)" ] \
      && [ -z "$(docker ps -aq --filter name=^grouphost-spike$ --filter label=com.docker.compose.project=grouphost)" ]; then
@@ -60,11 +63,11 @@ up)
   # The devnet's nginx sends https://grouphost.devnet.internal, and every name under
   # gh.<domain> (the groups' handles), to port 7070 here. The route is kept in the devnet's
   # data/https/apps, so this runs once.
-  if ! grep -qx 'grouphost 7070 gh' "${DEVNET}/data/https/apps" 2>/dev/null; then
-    "${DEVNET}/scripts/https-app.sh" grouphost 7070 gh
+  if ! grep -qx "grouphost ${HOST_PORT} gh" "${DEVNET}/data/https/apps" 2>/dev/null; then
+    "${DEVNET}/scripts/https-app.sh" grouphost "${HOST_PORT}" gh
   fi
   # A devnet from before handle endings takes the route and ignores the ending.
-  if ! grep -qx 'grouphost 7070 gh' "${DEVNET}/data/https/apps" 2>/dev/null; then
+  if ! grep -qx "grouphost ${HOST_PORT} gh" "${DEVNET}/data/https/apps" 2>/dev/null; then
     echo "host.sh: ${DEVNET} routes no handles to the host, so group handles resolve only at the host; update the devnet" >&2
   fi
   # Recreate every time: a container stopped while the devnet rebuilt its network cannot start

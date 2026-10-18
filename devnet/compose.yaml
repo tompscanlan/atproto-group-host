@@ -5,20 +5,22 @@
 # down and up leave it attached (compose warns "Resource is still in use" and reuses the
 # network). Its accounts, groups and blobs live on the volume grouphost-spike-data, which
 # neither project's `down -v` removes.
-name: grouphost
+name: ${HOST_PROJECT:-grouphost}
 
 services:
   grouphost:
     # The pinned alpha PDS image, so @atproto/pds is exactly that build.
     image: ghcr.io/bluesky-social/atproto@sha256:1cf9349e9f0e89789784569fed376cd647742ea7c368948625f44779ba03f150
-    container_name: grouphost-spike
+    container_name: ${HOST_CONTAINER:-grouphost-spike}
     user: root
     restart: unless-stopped
     entrypoint: node
     command: /spike/host.mjs
     networks: [devnet]
     ports:
-      - 7070:7070
+      # The devnet's nginx reaches the host here (host.docker.internal), at the port its
+      # data/https/apps records for the route.
+      - ${HOST_PORT:-7070}:7070
     # Throwaway keys: devnet only. The rotation key signs every group DID the host made, so
     # the file is kept between runs.
     env_file: ../spike/data/keys.env
@@ -66,4 +68,4 @@ networks:
 volumes:
   data:
     external: true
-    name: grouphost-spike-data
+    name: ${HOST_VOLUME:-grouphost-spike-data}

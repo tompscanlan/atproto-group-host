@@ -10,7 +10,7 @@
 // Run: ../../atproto-devnet/scripts/https-run node probe-day2.mjs 2>&1 | tee run-day2.log
 // Logins live in data/accounts.env (mode 600) and are never printed; tokens are never printed.
 import { execFileSync } from 'node:child_process'
-import { GROUP_DOMAIN, HOST, META, MEMBERS, alice, bob, as, listRecords, groupSignIn as signIn, log, sleep, spaceUri, state, summary, verdict, wellKnownDid } from './lib.mjs'
+import { GROUP_DOMAIN, HOST, HOST_CONTAINER, META, MEMBERS, alice, bob, as, listRecords, groupSignIn as signIn, log, sleep, spaceUri, state, summary, verdict, wellKnownDid } from './lib.mjs'
 
 // What the app asks for: write the two group spaces, make spaces, and read both. The reads are
 // separate items so a member who may only read still gets them.
@@ -102,7 +102,7 @@ if (G) {
 
   // ---------- d7 ----------
   log('\n## d7 the token table survives a host restart\n')
-  execFileSync('docker', ['restart', 'grouphost-spike'])
+  execFileSync('docker', ['restart', HOST_CONTAINER])
   for (let i = 0; i < 60; i++) {
     if ((await fetch(`${HOST}/xrpc/_health`).catch(() => null))?.ok) break
     await sleep(1000)

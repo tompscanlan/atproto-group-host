@@ -15,7 +15,7 @@
 //   DEVNET_LEAF_FILE=/workspaces/scratch/atproto-devnet/data/https/leaf.crt \
 //     /workspaces/scratch/atproto-devnet/scripts/https-run node probe-in-step.mjs > run-in-step.log 2>&1
 import { execFileSync } from 'node:child_process'
-import { GROUP_DOMAIN, HOST, META, MEMBERS, alice, as, call, groupSignIn, log, now, sleep, spaceUri, spike, state, summary, verdict } from './lib.mjs'
+import { GROUP_DOMAIN, HOST, HOST_CONTAINER, META, MEMBERS, alice, as, call, groupSignIn, log, now, sleep, spaceUri, spike, state, summary, verdict } from './lib.mjs'
 
 const NS = 'group.opensocial'
 const DECLARATION = `${NS}.declaration`
@@ -97,8 +97,8 @@ const f5 = await spike('interrupted-create', { label: hung, creatorDid: alice.di
 log(`- ${now()} /spike/interrupted-create hang -> ${JSON.stringify(f5)}`)
 const before = await resolve(hung)
 const notedBefore = await noted(hung)
-log(`- ${now()} docker restart grouphost-spike`)
-execFileSync('docker', ['restart', 'grouphost-spike'], { stdio: 'ignore' })
+log(`- ${now()} docker restart ${HOST_CONTAINER}`)
+execFileSync('docker', ['restart', HOST_CONTAINER], { stdio: 'ignore' })
 let up = false
 for (let i = 0; i < 60 && !up; i++) {
   await sleep(2000)

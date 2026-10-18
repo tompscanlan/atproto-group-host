@@ -22,10 +22,10 @@ const readEnv = (file) =>
 // The devnet devnet/host.sh uses, and its own facts (data/devnet.env, which its https-up.sh writes).
 const DEVNET = process.env.DEVNET ?? '/workspaces/scratch/atproto-devnet'
 const DENV = readEnv(path.join(DEVNET, 'data/devnet.env'))
-// A Chromium launcher that trusts the devnet's certificate. Point DEVNET_BROWSER at your own copy.
+// A Chromium launcher that trusts the devnet's certificate (devnet-browser.mjs here). Point DEVNET_BROWSER at your own.
 // It finds the certificate through DEVNET_CA_FILE, which defaults to that devnet's.
 process.env.DEVNET_CA_FILE ??= path.join(DEVNET, 'data/https/ca.crt')
-const { launchBrowser } = await import(process.env.DEVNET_BROWSER ?? '/workspaces/scratch/wt-atproto-permissioned-data-ewnj3/sandbox/opensocial/devnet-browser.mjs')
+const { launchBrowser } = await import(process.env.DEVNET_BROWSER ?? './devnet-browser.mjs')
 
 const require = createRequire(import.meta.url)
 const { chromium } = require('/home/node/.local/share/mise/installs/npm-playwright/1.63.0/node_modules/playwright')
@@ -35,6 +35,8 @@ export const HERE = path.dirname(new URL(import.meta.url).pathname)
 // ones committed in spike/.
 const SHOTS = path.join(HERE, 'shots', `${new Date().toISOString().replace(/[:.]/g, '-')}-${path.basename(process.argv[1] ?? 'run', '.mjs')}`)
 export const HOST = 'https://grouphost.devnet.internal'
+// The host's container, for the probes that read its log or restart it (devnet/host.sh sets HOST_CONTAINER for a second host).
+export const HOST_CONTAINER = process.env.HOST_CONTAINER ?? 'grouphost-spike'
 // Every devnet name sits under the devnet's domain; a devnet.env from before the setting means devnet.test.
 export const DOMAIN = DENV.DEVNET_DOMAIN || 'devnet.test'
 export const ALPHA = DENV.ALPHA_PDS_URL || `https://alpha.${DOMAIN}`
@@ -127,11 +129,12 @@ export async function groupSignIn(person, { create, groupDid, label: shot, scope
   await new Promise((r) => server.listen(CB_PORT, '127.0.0.1', r))
   const browser = await launchBrowser(chromium)
   const typed = []
-  const out = { ok: false, app, typed, kept: [], dropped: [], consentText: null, refused: [], displayNameFields: null, start: null }
+  const out = { ok: false, app, typed, kept: [], dropped: [], consentText: null, refused: [], displayNameFields: null, start: null, seen: [] }
   try {
     const p = await (await browser.newContext()).newPage()
+    p.on('request', (r) => out.seen.push(r.url().split('#')[0]))
     await p.goto(url.toString(), { waitUntil: 'load', timeout: 60000 })
-    await p.waitForURL(/127\.0\.0\.1:7070\/signin\/start/, { timeout: 30000 })
+    await p.waitForURL(/\/signin\/start/, { timeout: 30000 })
     // What the start page holds before anything is typed, and what markup it carries.
     const value = async (name) => ((await p.locator(`input[name=${name}]`).count()) ? await p.locator(`input[name=${name}]`).inputValue() : null)
     out.start = {
@@ -155,7 +158,7 @@ export async function groupSignIn(person, { create, groupDid, label: shot, scope
         const problem = p.locator('#problem')
         out.refused.push({
           ...t,
-          onPage: /127\.0\.0\.1:7070\/signin\/start/.test(p.url()),
+          onPage: /\/signin\/start/.test(p.url()),
           reason: (await problem.count()) ? await problem.getAttribute('data-reason') : null,
           text: (await problem.count()) ? await problem.innerText() : null,
         })

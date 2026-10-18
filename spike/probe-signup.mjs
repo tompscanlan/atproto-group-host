@@ -7,7 +7,7 @@
 // Run: ../../atproto-devnet/scripts/https-run node probe-signup.mjs 2>&1 | tee run-signup.log
 // Logins live in data/accounts.env (mode 600) and are never printed; tokens are never printed.
 import { spawnSync } from 'node:child_process'
-import { DOMAIN as DEVNET_DOMAIN, GROUP_DOMAIN as DOMAIN, HOST, META, alice, groupSignIn, listRecords, log, summary, verdict } from './lib.mjs'
+import { DOMAIN as DEVNET_DOMAIN, GROUP_DOMAIN as DOMAIN, HOST, HOST_CONTAINER, META, alice, groupSignIn, listRecords, log, summary, verdict } from './lib.mjs'
 
 const since = new Date().toISOString()
 const SCOPES = ['atproto', `space:${META}?authority=self&skey=self&action=read`]
@@ -55,7 +55,7 @@ verdict(
 )
 
 log('\n## u4 the request log\n')
-const logs = spawnSync('docker', ['logs', '--since', since, 'grouphost-spike'], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
+const logs = spawnSync('docker', ['logs', '--since', since, HOST_CONTAINER], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
 const text = `${logs.stdout}${logs.stderr}`
 const count = (s) => text.split(s).length - 1
 const headers = count('"headers":')

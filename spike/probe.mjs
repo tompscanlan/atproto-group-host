@@ -230,7 +230,7 @@ async function groupSignIn(person, label) {
     const p = await ctx.newPage()
     p.on('framenavigated', (f) => f === p.mainFrame() && pages.push(f.url().replace(/([?&](code|state|iss)=)[^&]+/g, '$1…').slice(0, 160)))
     await p.goto(url.toString(), { waitUntil: 'load', timeout: 60000 })
-    await p.waitForURL(/127\.0\.0\.1:7070\/signin\/start/, { timeout: 30000 })
+    await p.waitForURL(/\/signin\/start/, { timeout: 30000 })
     await p.fill('input[name=handle]', person.handle)
     typed.push({ origin: new URL(p.url()).origin, field: 'handle' })
     await p.click('button')

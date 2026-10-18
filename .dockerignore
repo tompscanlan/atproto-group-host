@@ -1,0 +1,5 @@
+spike/node_modules
+spike/data
+spike/shots
+*.log
+.git

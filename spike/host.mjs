@@ -51,7 +51,7 @@ const MANAGING_APP = `${HOST_DID}#group_host`
 // Every group space is made under this policy, so the PDS asks the host (checkUserAccess) who may
 // read and write it.
 const MA = { $type: 'com.atproto.simplespace.defs#managingAppPolicy', managingApp: MANAGING_APP }
-const LOOPBACK = process.env.HOST_LOOPBACK_URL // http://127.0.0.1:7070, where the browser lands
+const LOOPBACK = process.env.HOST_LOOPBACK_URL // http://127.0.0.1:7070, how the host calls its own PDS
 const STATE_FILE = '/data/grouphost-state.json'
 const log = (...a) => console.log(new Date().toISOString(), '[host]', ...a)
 // The host's own calls to its PDS (creating and seeding a group) carry this, so the gates below
@@ -493,8 +493,12 @@ async function settleInterruptedCreates() {
 }
 
 // ---- sign-in through the person's own PDS ----
-// The host as an OAuth CLIENT of the person's own PDS (authentication only). A loopback public
-// client is enough for the spike; the product would be a confidential client at PUBLIC_URL.
+// The host as an OAuth CLIENT of the person's own PDS (authentication only). A public client at
+// PUBLIC_URL, so the browser comes back to the host's public name from wherever the person is. It
+// holds no key and asks for no more than `atproto`, and its session is dropped once the callback
+// has said who the person is. A host that keeps the person's session would be a confidential
+// client, with a key.
+const CLIENT_ID = `${PUBLIC_URL}/signin/client-metadata.json`
 const actorResolver = new LocalActorResolver({
   handleResolver: new WellKnownHandleResolver(),
   didDocumentResolver: new CompositeDidDocumentResolver({
@@ -502,7 +506,13 @@ const actorResolver = new LocalActorResolver({
   }),
 })
 const personClient = new OAuthClient({
-  metadata: { redirect_uris: [`${LOOPBACK}/signin/callback`], scope: 'atproto' },
+  metadata: {
+    client_id: CLIENT_ID,
+    client_name: 'Group host sign-in',
+    client_uri: PUBLIC_URL,
+    redirect_uris: [`${PUBLIC_URL}/signin/callback`],
+    scope: 'atproto',
+  },
   actorResolver,
   stores: { sessions: new MemoryStore(), states: new MemoryStore({ ttl: 600_000 }) },
 })
@@ -559,6 +569,9 @@ outer.use((req, res, next) => {
   next()
 })
 
+// The sign-in client's metadata, which a person's own PDS fetches to learn who is asking.
+outer.get('/signin/client-metadata.json', (req, res) => res.json(personClient.metadata))
+
 // did:web for the host itself, naming the endpoint the PDS calls for checkUserAccess.
 outer.get('/.well-known/did.json', (req, res) => {
   res.json({
@@ -584,7 +597,7 @@ outer.get('/oauth/authorize', async (req, res, next) => {
     // What the start page shows first, from the app's hints (see addressFromName).
     const hint = { label: create ? addressFromName(req.query.gh_name) : '', handle: await handleOfPerson(req.query.gh_person) }
     pending.set(state, { requestUri: String(requestUri), clientId: String(clientId), mode: create ? 'create' : 'act', groupDid, hint })
-    res.redirect(`${LOOPBACK}/signin/start?state=${state}`)
+    res.redirect(`${PUBLIC_URL}/signin/start?state=${state}`)
   } catch (err) {
     next(err)
   }
@@ -658,7 +671,7 @@ outer.get('/signin/callback', async (req, res, next) => {
         log('group create failed', { label: p.label, personDid, err: err.message })
         p.problem = (await addressProblem(p.label)) ?? { reason: 'create', text: `The group could not be made (${err.message}). Try again.` }
         pending.set(state.s, p)
-        return res.redirect(`${LOOPBACK}/signin/start?${new URLSearchParams({ state: state.s })}`)
+        return res.redirect(`${PUBLIC_URL}/signin/start?${new URLSearchParams({ state: state.s })}`)
       }
     }
     const grants = await grantsFor(group.did, personDid)
@@ -681,8 +694,8 @@ outer.get('/signin/callback', async (req, res, next) => {
 
     const t = crypto.randomBytes(24).toString('base64url')
     tickets.set(t, { groupDid: group.did, personDid, exp: Date.now() + 120_000 })
-    // The callback is on the loopback origin, so a cookie would not reach the host's origin. The
-    // ticket rides the URL fragment instead: never sent to a server, never in a referrer.
+    // The ticket rides the URL fragment, never sent to a server and never in a referrer, and not
+    // a cookie, which the sign-in step of the provider's own page would not see.
     const q = new URLSearchParams({ request_uri: p.requestUri, client_id: p.clientId, gh: 'ticket' })
     const frag = new URLSearchParams({ t, g: group.did })
     res.redirect(`${PUBLIC_URL}/oauth/authorize?${q}#${frag}`)
