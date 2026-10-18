@@ -32,7 +32,7 @@ import { reservedSubdomains } from '/app/packages/pds/dist/handle/reserved.js'
 import { hasExplicitSlur } from '/app/packages/pds/dist/handle/explicit-slurs.js'
 import { BlobPermission, RepoPermission, SpacePermission, isAtprotoOauthScope } from '/app/packages/oauth/oauth-scopes/dist/index.js'
 import { TID } from '/app/packages/common-web/dist/index.js'
-import { SpaceRef, isValidNsid, isValidRecordKey } from '/app/packages/syntax/dist/index.js'
+import { SpaceRef, isValidDid, isValidNsid, isValidRecordKey } from '/app/packages/syntax/dist/index.js'
 import { OAuthClient, MemoryStore } from '@atcute/oauth-node-client'
 import {
   CompositeDidDocumentResolver,
@@ -514,6 +514,40 @@ async function groupDidOf(hint) {
 }
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
 
+// Hints an app may put on the link it sends the browser to, to fill in the start page: gh_name,
+// the group's name as the person typed it in the app (a create only), and gh_person, the person's
+// DID. Our own addition (TS, 2026-10-17); the proposal is silent on it, and another host ignores
+// them. A hint only fills in a field, which stays editable, and the checks on Continue are the same
+// as for anything typed. Nothing else reads a hint: the creator is whoever signs in at their own
+// PDS. A hint that does not work out (too long, malformed, unresolvable) leaves its field empty.
+const GH_NAME_MAX = 256 // characters; a longer name suggests nothing
+const GH_PERSON_MAX = 2048 // characters, atproto's DID limit (isValidDid checks it too)
+const ADDRESS_MAX = 18 // the PDS's limit on a handle's first label, which addressProblem checks
+
+// The address a name suggests: lowercase, each run of anything outside a-z0-9 one dash, no dash at
+// either end, cut to 18 with no dash left at the end. Under 3 characters suggests nothing.
+function addressFromName(name) {
+  if (typeof name !== 'string' || name.length > GH_NAME_MAX) return ''
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, ADDRESS_MAX)
+    .replace(/-+$/, '')
+  return slug.length >= 3 ? slug : ''
+}
+
+// The handle a person's DID names, checked both ways by the host's own resolver, or ''.
+async function handleOfPerson(did) {
+  if (typeof did !== 'string' || did.length > GH_PERSON_MAX || !isValidDid(did)) return ''
+  try {
+    const { handle } = await actorResolver.resolve(did, { signal: AbortSignal.timeout(5000) })
+    return handle && handle !== 'handle.invalid' ? handle : ''
+  } catch {
+    return ''
+  }
+}
+
 const outer = express()
 
 // The host's own calls to its PDS carry INTERNAL. The mark comes off the request here, before
@@ -547,7 +581,9 @@ outer.get('/oauth/authorize', async (req, res, next) => {
     const groupDid = create ? undefined : await groupDidOf(p.login_hint)
     if (!create && !groupDid) return next() // not a group sign-in: the PDS's own page
     const state = crypto.randomBytes(12).toString('hex')
-    pending.set(state, { requestUri: String(requestUri), clientId: String(clientId), mode: create ? 'create' : 'act', groupDid })
+    // What the start page shows first, from the app's hints (see addressFromName).
+    const hint = { label: create ? addressFromName(req.query.gh_name) : '', handle: await handleOfPerson(req.query.gh_person) }
+    pending.set(state, { requestUri: String(requestUri), clientId: String(clientId), mode: create ? 'create' : 'act', groupDid, hint })
     res.redirect(`${LOOPBACK}/signin/start?state=${state}`)
   } catch (err) {
     next(err)
@@ -556,7 +592,8 @@ outer.get('/oauth/authorize', async (req, res, next) => {
 
 // Ask who you are (your own handle), and for a new group its address, then OAuth to your own
 // PDS. A refusal comes back to this page as a line above the form, with what was typed kept and
-// the sign-in still open; `data-reason` names it for a test.
+// the sign-in still open; `data-reason` names it for a test. The fields start from the app's
+// hints; what the person typed always comes first.
 function startPage(state, p, { problem, label = '', handle = '' } = {}) {
   const fields =
     p.mode === 'create'
@@ -577,7 +614,7 @@ outer.get('/signin/start', async (req, res, next) => {
       // A first visit, or back from a create that failed after the person signed in.
       const { problem } = p
       delete p.problem
-      return res.type('html').send(startPage(state, p, { problem, label: p.label }))
+      return res.type('html').send(startPage(state, p, { problem, label: p.label ?? p.hint?.label, handle: p.handle ?? p.hint?.handle }))
     }
     const label = String(req.query.label ?? '').trim().toLowerCase()
     const handle = String(req.query.handle).trim()
@@ -588,6 +625,7 @@ outer.get('/signin/start', async (req, res, next) => {
       p.label = label
     }
     if (!handle) return again({ reason: 'handle', text: 'Enter your own handle, the account you sign in with.' })
+    p.handle = handle
     let url
     try {
       ;({ url } = await personClient.authorize({ target: { type: 'account', identifier: handle }, scope: 'atproto', state: { s: state } }))

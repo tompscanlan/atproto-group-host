@@ -163,6 +163,7 @@ cd spike
 "$DEVNET/scripts/https-run" node probe-day3.mjs   # 8 checks
 "$DEVNET/scripts/https-run" node probe-day4.mjs   # 16 checks
 "$DEVNET/scripts/https-run" node probe-signup.mjs # 4 checks; needs a group on the host, so day 2 first
+"$DEVNET/scripts/https-run" node probe-hints.mjs  # 9 checks; the hints on the link; needs a group, so day 2 first
 "$DEVNET/scripts/https-run" node probe-in-step.mjs # 6 checks; restarts the host once
 ```
 
@@ -192,6 +193,15 @@ refuses its setup calls.
 - **Sign-up page:** it opens at the host's loopback address, `http://127.0.0.1:7070/signin/start`.
   It asks for the group's address and the creator's own handle, not a display name: write the
   group's `profile` after the create to name it.
+- **Hints for that page:** an app may add `gh_name` (the group's name as the person typed it, a
+  create only) and `gh_person` (the person's DID) to the authorization URL it sends the browser to;
+  they do not go in the pushed request, whose unknown fields the PDS drops. The host suggests an
+  address from the name (lowercase, each run of other characters one dash, no dash at either end,
+  cut to 18; under 3 characters suggests nothing) and fills in the handle its own resolver finds for
+  the DID. Both fields stay editable and are checked on Continue as anything typed is. A name over
+  256 characters, a DID over 2048 or malformed, or one that does not resolve leaves its field empty.
+  A hint is never trusted: the creator is whoever signs in at their own PDS. This is our own
+  addition; the proposal is silent on it.
   A browser test that filters requests has to let `127.0.0.1:7070` through.
 
 ### Restarts and resets
