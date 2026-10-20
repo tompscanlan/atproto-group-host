@@ -1,6 +1,6 @@
 // probe-day5-4-atmo.mjs: atmo's create at the group host (om-3r2nx.6.5). Alice signs up a group at
 // the host with the scope atmo's create asks for (prompt=create); atmo's own set-up then runs on the
-// session that comes back, and atmo's own repair, reads and upload check the result. atmo's D1 is the
+// session that comes back, and atmo's own refresh, reads and upload check the result. atmo's D1 is the
 // app's own schema in SQLite. The browser half (atmo's form, its OAuth client and callback route) is
 // unit-tested in atmo; here the sign-up is the probe's.
 //   h0  at sign-up alice is offered every item of atmo's group session, the calendar space's
@@ -10,8 +10,8 @@
 //   h2  atmo's set-up made the calendar space through the host and wrote its own records there
 //       (event bindings, profile, rules, meta made public with the host's grants kept), every one
 //       taken by the host's write gate: the host logged no refusal for the group
-//   h3  (acceptance 3) atmo's repair on the group finds nothing to fix: no membership restored,
-//       orphaned or skipped, and the row unchanged
+//   h3  (acceptance 3) atmo's refresh from the host finds nothing to change: no membership
+//       restored, orphaned or skipped, and the row unchanged
 //   h4  (acceptance 4) the declaration reads back from the group's public repo with no auth; the
 //       picture the form gave, which atmo's set-up uploaded and its profile names, reads back through
 //       atmo's own avatar read with alice's own space credential, as the group page's route reads it
@@ -20,7 +20,7 @@
 // Run from spike/, with atmo's checkout named (its scripts/ bundle the adapter):
 //   ATMO_WEB=/workspaces/scratch/wt-atmo-events-group-host-adapter/apps/web \
 //   DEVNET_LEAF_FILE=/workspaces/scratch/atproto-devnet/data/https/leaf.crt \
-//     /workspaces/scratch/atproto-devnet/scripts/https-run node probe-day5-4-atmo.mjs > run-day5-4-atmo.log 2>&1
+//     /workspaces/scratch/atproto-devnet/bin/snowglobe.mjs run node probe-day5-4-atmo.mjs > run-day5-4-atmo.log 2>&1
 import path from 'node:path'
 import { ALPHA, HERE, HOST, META, MEMBERS, alice, as, call, groupSignIn, log, now, ownSession, spaceUri, state, summary, verdict } from './lib.mjs'
 
@@ -109,25 +109,25 @@ verdict(
 )
 
 // ---------- h3 ----------
-log("\n## h3 atmo's repair finds nothing to fix\n")
+log("\n## h3 atmo's refresh finds nothing to change\n")
 const columns = (r) => r && { name: r.name, description: r.description, require_approval: r.require_approval, location_name: r.location_name, owner_did: r.owner_did, about: r.about_space_uri, members: r.members_space_uri }
 const roster = () => raw.prepare(`SELECT m.did, r.name AS role FROM memberships m JOIN roles r ON r.id = m.role_id WHERE m.group_id = ? ORDER BY m.did`).all(row.id)
 const before = { columns: columns(row), roster: roster() }
-let repair
+let refresh
 try {
-  repair = await atmo.repairGroup({ db, env, group: row, callerDid: alice.did, ownReader: reader })
+  refresh = await atmo.refreshGroup({ db, env, group: row, callerDid: alice.did, reader })
 } catch (e) {
-  repair = { error: String(e) }
+  refresh = { error: String(e) }
 }
 const after = { columns: columns(await atmo.getGroupByDid(db, G)), roster: roster() }
-const m = repair.rebuild?.members
-log(`- repair: atHost ${repair.atHost}; rebuild ${repair.rebuild?.path}; members ${JSON.stringify(m)}; says: ${repair.error ?? atmo.describeRepair(repair)}`)
+const m = refresh.members
+log(`- refresh: ${refresh.path}; members ${JSON.stringify(m)}; says: ${refresh.error ?? atmo.describeRefresh(refresh)}`)
 log(`- row and roster before ${JSON.stringify(before)}; after ${JSON.stringify(after)}`)
 verdict(
   'h3',
-  repair.atHost === true && repair.rebuild?.path === 'repaired' && m.restored.length === 0 && m.orphans.length === 0 &&
+  refresh.path === 'repaired' && m?.restored.length === 0 && m.orphans.length === 0 &&
     m.skipped.length === 0 && m.unchanged.includes(alice.did) && JSON.stringify(before) === JSON.stringify(after),
-  `repair ran at the host: ${repair.atHost}; restored ${m?.restored.length}, orphans ${m?.orphans.length}, skipped ${JSON.stringify(m?.skipped)}, unchanged ${JSON.stringify(m?.unchanged)}; row and roster unchanged: ${JSON.stringify(before) === JSON.stringify(after)}`,
+  `refresh ${refresh.path ?? refresh.error}; restored ${m?.restored.length}, orphans ${m?.orphans.length}, skipped ${JSON.stringify(m?.skipped)}, unchanged ${JSON.stringify(m?.unchanged)}; row and roster unchanged: ${JSON.stringify(before) === JSON.stringify(after)}`,
 )
 
 // ---------- h4 ----------
