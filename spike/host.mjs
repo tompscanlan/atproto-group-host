@@ -1386,6 +1386,7 @@ outer.use((err, req, res, next) => {
 // PDS's own app does the listening, and the server it makes hands every request to outer, in the
 // same tick and before any request can arrive. Listening with outer instead drops the upgrade
 // handler: a relay's subscribeRepos then falls through as a plain GET and gets AuthMissing.
+// probe-subscribe-repos.mjs checks this end to end; rerun it on every PDS image update.
 const listenWithUpgrades = pds.app.listen
 pds.app.listen = (...args) => {
   const server = listenWithUpgrades(...args)
