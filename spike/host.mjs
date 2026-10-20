@@ -670,6 +670,9 @@ outer.get('/signin/callback', async (req, res, next) => {
       throw err
     }
     const personDid = session.did
+    // Who the person is was all the session was for: revoke it at their PDS and drop it here (the
+    // client drops it even when the revoke fails). Not awaited, so a slow PDS doesn't hold the sign-in.
+    session.signOut().catch((err) => log('sign-out after sign-in failed', { personDid, err: err.message }))
     const p = pending.get(state?.s)
     pending.delete(state?.s)
     if (!p) return res.status(400).send('unknown sign-in')
