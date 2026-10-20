@@ -22,6 +22,10 @@ const readEnv = (file) =>
 // The devnet devnet/host.sh uses, and its own facts (data/devnet.env, which its https-up.sh writes).
 const DEVNET = process.env.DEVNET ?? '/workspaces/scratch/atproto-devnet'
 const DENV = readEnv(path.join(DEVNET, 'data/devnet.env'))
+// The browser launcher reads the domain and nginx's address from the environment; the devnet's own
+// are the default, so a copy of the devnet under another domain needs only DEVNET.
+if (DENV.DEVNET_DOMAIN) process.env.DEVNET_DOMAIN ??= DENV.DEVNET_DOMAIN
+if (DENV.DEVNET_BIND) process.env.DEVNET_BIND ??= DENV.DEVNET_BIND
 // A Chromium launcher that trusts the devnet's certificate (devnet-browser.mjs here). Point DEVNET_BROWSER at your own.
 // It finds the certificate through DEVNET_CA_FILE, which defaults to that devnet's.
 process.env.DEVNET_CA_FILE ??= path.join(DEVNET, 'data/https/ca.crt')
@@ -34,14 +38,19 @@ export const HERE = path.dirname(new URL(import.meta.url).pathname)
 // A run's screenshots go in a folder of their own, so no run writes over another's or over the
 // ones committed in spike/.
 const SHOTS = path.join(HERE, 'shots', `${new Date().toISOString().replace(/[:.]/g, '-')}-${path.basename(process.argv[1] ?? 'run', '.mjs')}`)
-export const HOST = 'https://grouphost.devnet.internal'
+// The host under test: GROUP_HOST_URL, as atmo names it, else the one devnet/host.sh runs. A
+// snowglobe.yml group host is https://<name>.<domain>.
+export const HOST = process.env.GROUP_HOST_URL ?? 'https://grouphost.devnet.internal'
 // The host's container, for the probes that read its log or restart it (devnet/host.sh sets HOST_CONTAINER for a second host).
 export const HOST_CONTAINER = process.env.HOST_CONTAINER ?? 'grouphost-spike'
 // Every devnet name sits under the devnet's domain; a devnet.env from before the setting means devnet.test.
 export const DOMAIN = DENV.DEVNET_DOMAIN || 'devnet.test'
 export const ALPHA = DENV.ALPHA_PDS_URL || `https://alpha.${DOMAIN}`
-// A group's handle is <label>.gh.<domain> (devnet/compose.yaml).
-export const GROUP_DOMAIN = `.gh.${DOMAIN}`
+// A group's handle ending: GROUP_HANDLE_DOMAIN, else, for a host at GROUP_HOST_URL, its own name
+// (a snowglobe.yml group host's groups are <label>.<name>.<domain>), else .gh.<domain>
+// (devnet/compose.yaml).
+export const GROUP_DOMAIN =
+  process.env.GROUP_HANDLE_DOMAIN ?? (process.env.GROUP_HOST_URL ? `.${new URL(HOST).hostname}` : `.gh.${DOMAIN}`)
 export const META = 'group.opensocial.meta'
 export const MEMBERS = 'group.opensocial.members'
 export const now = () => new Date().toISOString().replace(/\.\d+Z$/, 'Z')
@@ -60,7 +69,8 @@ export function summary() {
   log(`\n${verdicts.filter((v) => v.ok).length}/${verdicts.length} pass`)
 }
 
-const E = readEnv(path.join(HERE, 'data/accounts.env'))
+// The people's logins: GH_ALICE_* and GH_BOB_*, in GH_ACCOUNTS_FILE, else data/accounts.env here.
+const E = readEnv(process.env.GH_ACCOUNTS_FILE ?? path.join(HERE, 'data/accounts.env'))
 export const alice = { who: 'alice', handle: E.GH_ALICE_HANDLE, password: E.GH_ALICE_PASSWORD, did: E.GH_ALICE_DID }
 export const bob = { who: 'bob', handle: E.GH_BOB_HANDLE, password: E.GH_BOB_PASSWORD, did: E.GH_BOB_DID }
 

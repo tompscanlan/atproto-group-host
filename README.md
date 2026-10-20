@@ -217,6 +217,33 @@ not use; the defaults are the shared host's. Give the probes the same `HOST_CONT
 and `DEVNET_DOMAIN` for their browser (`spike/devnet-browser.mjs`). `probe-public-signin.mjs` checks that
 the sign-in ran by name alone.
 
+### A group host from a devnet's snowglobe.yml
+
+A devnet can run group hosts itself, built from this checkout: `grouphosts:` in its `snowglobe.yml`,
+with `SNOWGLOBE_OPENSOCIAL_BUILD` (or the entry's `build:`) naming this repo. Each one is
+`https://<name>.<domain>`, its groups' handles are under that name, and its container is
+`<project>-grouphost-<name>-1`. The probes take it from the environment:
+
+```bash
+cd spike
+DEVNET=<that devnet checkout> GROUP_HOST_URL=https://gh.<domain> \
+  GH_ACCOUNTS_FILE=<that devnet checkout>/data/accounts.env HOST_CONTAINER=<project>-grouphost-gh-1 \
+  "$DEVNET/bin/snowglobe.mjs" run node probe-signup.mjs
+```
+
+- `GROUP_HOST_URL` is the host; the groups' handle ending is then its name (`GROUP_HANDLE_DOMAIN`
+  sets another).
+- `GH_ACCOUNTS_FILE` holds `GH_ALICE_*` and `GH_BOB_*`; `accounts: [gh-alice@alpha, gh-bob@alpha]`
+  in the file makes them there.
+- The browser takes the domain and nginx's address from `$DEVNET/data/devnet.env`.
+
+The domain's top-level name has to suit both a handle and an OAuth client. The host signs people in
+as a client at its own name, and the PDS refuses a client there under `.test`, `.local`,
+`.localhost`, `.invalid` or `.example`, while a handle cannot end in `.internal`. So a globe at
+`devnet.test` runs the host, but nobody can sign in through it. Checked 2026-10-20 at `ghcheck.lan`:
+`probe-signup.mjs` passed 4 of 4 on each of two hosts (the first run on a fresh host fails u1, which
+needs a group already there).
+
 ### Restarts and resets
 
 - **A devnet restart** (`https-down.sh`, then `https-up.sh`, no `-v`): nothing to do. The host stays
