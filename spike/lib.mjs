@@ -22,14 +22,19 @@ const readEnv = (file) =>
 // The devnet devnet/host.sh uses, and its own facts (data/devnet.env, which its https-up.sh writes).
 const DEVNET = process.env.DEVNET ?? '/workspaces/scratch/atproto-devnet'
 const DENV = readEnv(path.join(DEVNET, 'data/devnet.env'))
+// The devnet's settings were DEVNET_* until 2026-10-20 and are SG_* now: either name works, from
+// the environment or the devnet's devnet.env.
+for (const k of ['DOMAIN', 'BIND', 'PROJECT', 'CA_FILE', 'LEAF_FILE', 'BROWSER'])
+  if (process.env[`SG_${k}`] === undefined && process.env[`DEVNET_${k}`] !== undefined) process.env[`SG_${k}`] = process.env[`DEVNET_${k}`]
+const denv = (k) => DENV[`SG_${k}`] || DENV[`DEVNET_${k}`]
 // The browser launcher reads the domain and nginx's address from the environment; the devnet's own
 // are the default, so a copy of the devnet under another domain needs only DEVNET.
-if (DENV.DEVNET_DOMAIN) process.env.DEVNET_DOMAIN ??= DENV.DEVNET_DOMAIN
-if (DENV.DEVNET_BIND) process.env.DEVNET_BIND ??= DENV.DEVNET_BIND
-// A Chromium launcher that trusts the devnet's certificate (devnet-browser.mjs here). Point DEVNET_BROWSER at your own.
-// It finds the certificate through DEVNET_CA_FILE, which defaults to that devnet's.
-process.env.DEVNET_CA_FILE ??= path.join(DEVNET, 'data/https/ca.crt')
-const { launchBrowser } = await import(process.env.DEVNET_BROWSER ?? './devnet-browser.mjs')
+if (denv('DOMAIN')) process.env.SG_DOMAIN ??= denv('DOMAIN')
+if (denv('BIND')) process.env.SG_BIND ??= denv('BIND')
+// A Chromium launcher that trusts the devnet's certificate (devnet-browser.mjs here). Point SG_BROWSER at your own.
+// It finds the certificate through SG_CA_FILE, which defaults to that devnet's.
+process.env.SG_CA_FILE ??= path.join(DEVNET, 'data/https/ca.crt')
+const { launchBrowser } = await import(process.env.SG_BROWSER ?? './devnet-browser.mjs')
 
 const require = createRequire(import.meta.url)
 const { chromium } = require(process.env.PLAYWRIGHT_DIR ?? '/home/node/.local/share/mise/installs/npm-playwright/1.63.0/node_modules/playwright')
@@ -44,7 +49,7 @@ export const HOST = process.env.GROUP_HOST_URL ?? 'https://grouphost.devnet.inte
 // The host's container, for the probes that read its log or restart it (devnet/host.sh sets HOST_CONTAINER for a second host).
 export const HOST_CONTAINER = process.env.HOST_CONTAINER ?? 'grouphost-spike'
 // Every devnet name sits under the devnet's domain; a devnet.env from before the setting means devnet.test.
-export const DOMAIN = DENV.DEVNET_DOMAIN || 'devnet.test'
+export const DOMAIN = denv('DOMAIN') || 'devnet.test'
 export const ALPHA = DENV.ALPHA_PDS_URL || `https://alpha.${DOMAIN}`
 // A group's handle ending: GROUP_HANDLE_DOMAIN, else, for a host at GROUP_HOST_URL, its own name
 // (a snowglobe.yml group host's groups are <label>.<name>.<domain>), else .gh.<domain>

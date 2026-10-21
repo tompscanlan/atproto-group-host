@@ -7,7 +7,7 @@
 //       the host too, and bob ends holding no request and no membership
 //   g3  an OAuth session without the rpc: items is refused at alpha, and the host logs no call
 // Run from spike/:
-//   DEVNET_LEAF_FILE=/workspaces/scratch/atproto-devnet/data/https/leaf.crt \
+//   SG_LEAF_FILE=/workspaces/scratch/atproto-devnet/data/https/leaf.crt \
 //     /workspaces/scratch/atproto-devnet/scripts/https-run node probe-day5-3.mjs > run-day5-3.log 2>&1
 import { ALPHA, bob, log, now, ownOAuth, state, summary, verdict } from './lib.mjs'
 

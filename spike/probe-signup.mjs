@@ -7,7 +7,7 @@
 // Run: ../../atproto-devnet/scripts/https-run node probe-signup.mjs 2>&1 | tee run-signup.log
 // Logins live in data/accounts.env (mode 600) and are never printed; tokens are never printed.
 import { spawnSync } from 'node:child_process'
-import { DOMAIN as DEVNET_DOMAIN, GROUP_DOMAIN as DOMAIN, HOST, HOST_CONTAINER, META, alice, groupSignIn, listRecords, log, summary, verdict } from './lib.mjs'
+import { DOMAIN as SG_DOMAIN, GROUP_DOMAIN as DOMAIN, HOST, HOST_CONTAINER, META, alice, groupSignIn, listRecords, log, summary, verdict } from './lib.mjs'
 
 const since = new Date().toISOString()
 const SCOPES = ['atproto', `space:${META}?authority=self&skey=self&action=read`]
@@ -27,7 +27,7 @@ const REFUSED = [
   { label: 'a'.repeat(19), want: 'length' }, // one over the PDS's 18
   { label: '-dash', want: 'characters' },
   ...(taken ? [{ label: taken, want: 'taken' }] : []),
-  { label: 'unused-address', handle: `nobody-here.${DEVNET_DOMAIN}`, want: 'handle' },
+  { label: 'unused-address', handle: `nobody-here.${SG_DOMAIN}`, want: 'handle' },
 ]
 
 log('\n## u1-u3 refusals on the page, then the create\n')

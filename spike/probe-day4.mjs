@@ -32,7 +32,7 @@
 //   f16 who may call it: no auth is refused, and bob's session from f11, offered manage=create
 //       as admin, is refused now that he is a member
 // Run from spike/ (Chromium needs the devnet's leaf certificate):
-//   DEVNET_LEAF_FILE=/workspaces/scratch/atproto-devnet/data/https/leaf.crt \
+//   SG_LEAF_FILE=/workspaces/scratch/atproto-devnet/data/https/leaf.crt \
 //     /workspaces/scratch/atproto-devnet/scripts/https-run node probe-day4.mjs > run-day4.log 2>&1
 import {
   HOST, META, MEMBERS, alice, bob, as, asOwn, call, credentialFor, groupSignIn, listRecords, log, ownSession, spaceUri, state, summary, verdict,

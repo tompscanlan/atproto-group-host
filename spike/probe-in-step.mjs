@@ -12,7 +12,7 @@
 //   k6  the address freed in k4 makes a group again, with alice its admin
 // Restarts the host container (grouphost-spike), so run it where docker reaches the devnet's.
 // Run from spike/ (Chromium needs the devnet's leaf certificate):
-//   DEVNET_LEAF_FILE=/workspaces/scratch/atproto-devnet/data/https/leaf.crt \
+//   SG_LEAF_FILE=/workspaces/scratch/atproto-devnet/data/https/leaf.crt \
 //     /workspaces/scratch/atproto-devnet/scripts/https-run node probe-in-step.mjs > run-in-step.log 2>&1
 import { execFileSync } from 'node:child_process'
 import { GROUP_DOMAIN, HOST, HOST_CONTAINER, META, MEMBERS, alice, as, call, groupSignIn, log, now, sleep, spaceUri, spike, state, summary, verdict } from './lib.mjs'

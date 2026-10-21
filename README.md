@@ -86,10 +86,11 @@ other than the alpha. Caching: the spike reads the group's records on every requ
 ## Running it on the devnet
 
 The host runs on a private https devnet from
-[`OpenMeet-Team/atproto-devnet`](https://github.com/OpenMeet-Team/atproto-devnet): its PLC, its spaces
+[`OpenMeet-Team/snowglobe`](https://github.com/OpenMeet-Team/snowglobe): its PLC, its spaces
 alpha PDS, and an nginx that serves every name with a local CA. The devnet is used as it is; nothing
 for the host goes into that repo. Below, `$DEVNET` is that checkout; `devnet/host.sh` defaults to
-`/workspaces/scratch/atproto-devnet`.
+`/workspaces/scratch/atproto-devnet`. The devnet's settings are `SG_*`; until 2026-10-20 they were
+`DEVNET_*`, and the scripts and probes here still take either.
 
 ### 1. Bring the devnet up
 
@@ -98,12 +99,12 @@ The devnet README's "The https devnet" has the details. In short:
 ```bash
 export DEVNET=/path/to/atproto-devnet
 cd "$DEVNET"
-export DEVNET_PROJECT=devnet-mine   # the scripts refuse the shared devnet-spaces without DEVNET_RESET_OK=1
+export SG_PROJECT=devnet-mine   # the scripts refuse the shared devnet-spaces without SG_RESET_OK=1
 ./scripts/https-up.sh               # safe to rerun; writes data/devnet.env
 ```
 
 Only one https devnet can hold port 443 on a machine, so if one is already up, use it.
-`devnet/host.sh` reads the compose project, the lexicon authority and the domain (`DEVNET_DOMAIN`,
+`devnet/host.sh` reads the compose project, the lexicon authority and the domain (`SG_DOMAIN`,
 `devnet.test` unless the devnet was given another) from `$DEVNET/data/devnet.env`. The names below
 use `devnet.test`.
 
@@ -167,13 +168,13 @@ cd spike
 "$DEVNET/scripts/https-run" node probe-in-step.mjs # 6 checks; restarts the host once
 "$DEVNET/scripts/https-run" node probe-public-signin.mjs # 2 checks; the sign-in runs by name alone
 "$DEVNET/scripts/https-run" node probe-subscribe-repos.mjs # 3 checks; a group's write arrives on subscribeRepos, the feed a relay follows
-DEVNET=$DEVNET DEVNET_PROJECT=$DEVNET_PROJECT ./remote-signin.sh # the same probe from a container with its own network, as a browser on another machine
+DEVNET=$DEVNET SG_PROJECT=$SG_PROJECT ./remote-signin.sh # the same probe from a container with its own network, as a browser on another machine
 ```
 
 Each prints its checks and ends with a summary and a pass count. `spike/lib.mjs` holds what they
 share. It needs two things outside this repo:
 
-- **A Chromium launcher that trusts the devnet.** `DEVNET_BROWSER` names it. The default is
+- **A Chromium launcher that trusts the devnet.** `SG_BROWSER` names it. The default is
   `sandbox/opensocial/devnet-browser.mjs` from the `sandbox/opensocial-lexicons` branch of
   `tompscanlan/atproto`.
 - **Playwright,** which `lib.mjs` loads from a fixed install path. Change that line on another machine.
@@ -211,16 +212,16 @@ refuses its setup calls.
 ### A second host beside the shared one
 
 `devnet/host.sh` also runs a host for a second copy of the devnet (another checkout, another compose
-project and domain, `DEVNET_BIND` for the address its nginx listens on). Set `DEVNET` to that copy and
+project and domain, `SG_BIND` for the address its nginx listens on). Set `DEVNET` to that copy and
 `HOST_PROJECT`, `HOST_CONTAINER`, `HOST_VOLUME` and `HOST_PORT` to names and a port the shared host does
-not use; the defaults are the shared host's. Give the probes the same `HOST_CONTAINER`, and `DEVNET_BIND`
-and `DEVNET_DOMAIN` for their browser (`spike/devnet-browser.mjs`). `probe-public-signin.mjs` checks that
+not use; the defaults are the shared host's. Give the probes the same `HOST_CONTAINER`, and `SG_BIND`
+and `SG_DOMAIN` for their browser (`spike/devnet-browser.mjs`). `probe-public-signin.mjs` checks that
 the sign-in ran by name alone.
 
 ### A group host from a devnet's snowglobe.yml
 
 A devnet can run group hosts itself, built from this checkout: `grouphosts:` in its `snowglobe.yml`,
-with `SNOWGLOBE_OPENSOCIAL_BUILD` (or the entry's `build:`) naming this repo. Each one is
+with `SG_OPENSOCIAL_BUILD` (or the entry's `build:`) naming this repo. Each one is
 `https://<name>.<domain>`, its groups' handles are under that name, and its container is
 `<project>-grouphost-<name>-1`. The probes take it from the environment:
 

@@ -13,7 +13,7 @@
 //   h5  admin reads and writes in every group space (TS, 2026-10-15): alice's session from the create,
 //       authorized before the calendar space existed, makes that space and writes an event in it
 // Run from spike/ (Chromium needs the devnet's leaf certificate):
-//   DEVNET_LEAF_FILE=/workspaces/scratch/atproto-devnet/data/https/leaf.crt \
+//   SG_LEAF_FILE=/workspaces/scratch/atproto-devnet/data/https/leaf.crt \
 //     /workspaces/scratch/atproto-devnet/scripts/https-run node probe-day5.mjs > run-day5.log 2>&1
 import { HOST, META, MEMBERS, alice, bob, as, call, groupSignIn, log, now, spaceUri, state, summary, verdict } from './lib.mjs'
 

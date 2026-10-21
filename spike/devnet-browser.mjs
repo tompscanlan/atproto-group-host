@@ -4,14 +4,14 @@
 // resolve. Chromium gets two launch args instead:
 //
 //   --host-resolver-rules              the devnet's names resolve to the address its nginx answers on
-//                                      (DEVNET_BIND, 127.0.0.1 unless the devnet was given another):
-//                                      every name under DEVNET_DOMAIN, plc.directory, and apps under
+//                                      (SG_BIND, 127.0.0.1 unless the devnet was given another):
+//                                      every name under SG_DOMAIN, plc.directory, and apps under
 //                                      .devnet.internal
 //   --ignore-certificate-errors-spki-list
 //                                      trust exactly the key of the devnet's leaf certificate, and
 //                                      no other certificate error
 //
-// The leaf is DEVNET_LEAF_FILE, or else leaf.crt beside DEVNET_CA_FILE (lib.mjs sets that to the
+// The leaf is SG_LEAF_FILE, or else leaf.crt beside SG_CA_FILE (lib.mjs sets that to the
 // devnet's data/https/ca.crt). A pattern with a leading * matches names of any depth.
 import { X509Certificate, createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -27,14 +27,14 @@ export function leafSpki(certPath) {
 }
 
 function leafFile() {
-  if (process.env.DEVNET_LEAF_FILE) return process.env.DEVNET_LEAF_FILE
-  if (process.env.DEVNET_CA_FILE) return path.join(path.dirname(process.env.DEVNET_CA_FILE), 'leaf.crt')
-  throw new Error('DEVNET_LEAF_FILE is required')
+  if (process.env.SG_LEAF_FILE) return process.env.SG_LEAF_FILE
+  if (process.env.SG_CA_FILE) return path.join(path.dirname(process.env.SG_CA_FILE), 'leaf.crt')
+  throw new Error('SG_LEAF_FILE is required')
 }
 
 export async function launchBrowser(chromium) {
-  const domain = process.env.DEVNET_DOMAIN || 'devnet.test'
-  const bind = process.env.DEVNET_BIND || '127.0.0.1'
+  const domain = process.env.SG_DOMAIN || 'devnet.test'
+  const bind = process.env.SG_BIND || '127.0.0.1'
   const names = [`*.${domain}`, 'plc.directory', '*.devnet.internal']
   const args = [
     `--host-resolver-rules=${names.map((n) => `MAP ${n} ${bind}`).join(', ')}`,

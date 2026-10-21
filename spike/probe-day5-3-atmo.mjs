@@ -12,7 +12,7 @@
 //   h4  bob leaves the open group: the host logs leaveGroup from bob, and atmo's row for him goes
 // Run from spike/, with atmo's checkout named (its scripts/ bundle the adapter):
 //   ATMO_WEB=/workspaces/scratch/wt-atmo-events-group-host-adapter/apps/web \
-//   DEVNET_LEAF_FILE=/workspaces/scratch/atproto-devnet/data/https/leaf.crt \
+//   SG_LEAF_FILE=/workspaces/scratch/atproto-devnet/data/https/leaf.crt \
 //     /workspaces/scratch/atproto-devnet/scripts/https-run node probe-day5-3-atmo.mjs > run-day5-3-atmo.log 2>&1
 import path from 'node:path'
 import { HERE, HOST, META, alice, as, bob, groupSignIn, log, now, ownOAuth, spaceUri, state, summary, verdict } from './lib.mjs'

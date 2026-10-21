@@ -24,22 +24,24 @@ DENV="${DEVNET}/data/devnet.env"
 KEYS="${HERE}/../spike/data/keys.env"
 
 env_get() { sed -n "s/^$1=//p" "$2" | tail -1; }
+# A devnet setting, SG_<name>, or DEVNET_<name> in a devnet.env written before 2026-10-20.
+sg_get() { v="$(env_get "SG_$1" "$2")"; [ -n "$v" ] || v="$(env_get "DEVNET_$1" "$2")"; printf '%s' "$v"; }
 
 if [ ! -f "${DENV}" ]; then
   echo "host.sh: no ${DENV}; bring the devnet up with its scripts/https-up.sh first" >&2
   exit 1
 fi
-export DEVNET_PROJECT="${DEVNET_PROJECT:-$(env_get DEVNET_PROJECT "${DENV}")}"
+export SG_PROJECT="${SG_PROJECT:-${DEVNET_PROJECT:-$(sg_get PROJECT "${DENV}")}}"
 export LEX_AUTHORITY_DID="${LEX_AUTHORITY_DID:-$(env_get LEX_AUTHORITY_DID "${DENV}")}"
 # The devnet's, not ours to choose; a devnet.env from before the setting means devnet.test.
-DEVNET_DOMAIN="$(env_get DEVNET_DOMAIN "${DENV}")"
-export DEVNET_DOMAIN="${DEVNET_DOMAIN:-devnet.test}"
+SG_DOMAIN="$(sg_get DOMAIN "${DENV}")"
+export SG_DOMAIN="${SG_DOMAIN:-devnet.test}"
 dc() { docker compose -f "${HERE}/compose.yaml" "$@"; }
 
 case "${1:-}" in
 up)
-  if ! docker network inspect "${DEVNET_PROJECT}_atproto-devnet" >/dev/null 2>&1; then
-    echo "host.sh: the devnet ${DEVNET_PROJECT} is not up (no network ${DEVNET_PROJECT}_atproto-devnet)" >&2
+  if ! docker network inspect "${SG_PROJECT}_atproto-devnet" >/dev/null 2>&1; then
+    echo "host.sh: the devnet ${SG_PROJECT} is not up (no network ${SG_PROJECT}_atproto-devnet)" >&2
     exit 1
   fi
   mkdir -p "$(dirname "${KEYS}")"

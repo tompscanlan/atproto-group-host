@@ -19,7 +19,7 @@
 //       sync.getBlob does not serve the blob
 // Run from spike/, with atmo's checkout named (its scripts/ bundle the adapter):
 //   ATMO_WEB=/workspaces/scratch/wt-atmo-events-group-host-adapter/apps/web \
-//   DEVNET_LEAF_FILE=/workspaces/scratch/atproto-devnet/data/https/leaf.crt \
+//   SG_LEAF_FILE=/workspaces/scratch/atproto-devnet/data/https/leaf.crt \
 //     /workspaces/scratch/atproto-devnet/bin/snowglobe.mjs run node probe-day5-4-atmo.mjs > run-day5-4-atmo.log 2>&1
 import path from 'node:path'
 import { ALPHA, HERE, HOST, META, MEMBERS, alice, as, call, groupSignIn, log, now, ownSession, spaceUri, state, summary, verdict } from './lib.mjs'

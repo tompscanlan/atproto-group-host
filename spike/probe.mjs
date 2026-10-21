@@ -14,8 +14,8 @@ import {
   WebDidDocumentResolver,
   WellKnownHandleResolver,
 } from '@atcute/identity-resolver'
-// A Chromium launcher that trusts the devnet's certificate. Point DEVNET_BROWSER at your own copy.
-const { launchBrowser } = await import(process.env.DEVNET_BROWSER ?? '/workspaces/scratch/wt-atproto-permissioned-data-ewnj3/sandbox/opensocial/devnet-browser.mjs')
+// A Chromium launcher that trusts the devnet's certificate. Point SG_BROWSER at your own copy.
+const { launchBrowser } = await import(process.env.SG_BROWSER ?? '/workspaces/scratch/wt-atproto-permissioned-data-ewnj3/sandbox/opensocial/devnet-browser.mjs')
 
 const require = createRequire(import.meta.url)
 const { chromium } = require('/home/node/.local/share/mise/installs/npm-playwright/1.63.0/node_modules/playwright')
