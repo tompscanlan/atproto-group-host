@@ -239,10 +239,11 @@ DEVNET=<that devnet checkout> GROUP_HOST_URL=https://gh.<domain> \
 
 The domain's top-level name has to suit both a handle and an OAuth client. The host signs people in
 as a client at its own name, and the PDS refuses a client there under `.test`, `.local`,
-`.localhost`, `.invalid` or `.example`, while a handle cannot end in `.internal`. So a globe at
-`devnet.test` runs the host, but nobody can sign in through it. Checked 2026-10-20 at `ghcheck.lan`:
-`probe-signup.mjs` passed 4 of 4 on each of two hosts (the first run on a fresh host fails u1, which
-needs a group already there).
+`.localhost`, `.invalid` or `.example`, while a handle cannot end in `.internal`. So a globe at a
+`.test` domain runs the host, but nobody can sign in through it. A globe's default domain,
+`local.snowglobe.at`, suits both. Checked 2026-10-20 on a globe that named no domain:
+`probe-signup.mjs` passed 4 of 4 at `gh.local.snowglobe.at` (the first run on a fresh host fails u1,
+which needs a group already there), as it did earlier on two hosts at `ghcheck.lan`.
 
 ### Restarts and resets
 
