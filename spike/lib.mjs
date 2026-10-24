@@ -347,17 +347,16 @@ async function p256() {
   const sign = async (data) => new Uint8Array(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, pair.privateKey, data))
   return { keyId, sign }
 }
+// A request made with a space credential, signed for `audience`, as the 2026-10-22 alpha takes it.
 export async function sigHeaders(key, authorization, audience) {
-  const params = audience === undefined ? `("authorization");keyid="${key.keyId}"` : '("authorization" "atproto-space-audience")'
-  const lines = [`"authorization": ${authorization}`]
-  if (audience !== undefined) lines.push(`"atproto-space-audience": ${audience}`)
-  lines.push(`"@signature-params": ${params}`)
+  const params = '("authorization" "atproto-space-audience");tag="atproto-space-credential"'
+  const lines = [`"authorization": ${authorization}`, `"atproto-space-audience": ${audience}`, `"@signature-params": ${params}`]
   const signature = await key.sign(new TextEncoder().encode(lines.join('\n')))
   return {
     authorization,
-    ...(audience !== undefined ? { 'atproto-space-audience': audience } : {}),
-    'signature-input': `atproto-space=${params}`,
-    signature: `atproto-space=:${b64(signature)}:`,
+    'atproto-space-audience': audience,
+    'signature-input': `atproto-space-credential=${params}`,
+    signature: `atproto-space-credential=:${b64(signature)}:`,
   }
 }
 // A person's space credential: a delegation token from their own PDS, traded at the space host.
@@ -366,15 +365,14 @@ export async function credentialFor(own, space) {
   if (d.status !== 200) return { status: d.status, body: d.body }
   const key = await p256()
   const r = await call(`${own.who} delegation token`, HOST, 'POST', 'com.atproto.space.getSpaceCredential', {
-    body: { space },
-    headers: await sigHeaders(key, `Bearer ${d.body.token}`),
+    body: { space, credentialKid: key.keyId, delegationToken: d.body.token },
   })
   return { status: r.status, body: r.body, cred: r.status === 200 ? { token: r.body.credential, key } : null }
 }
 export async function listWriters(cred, space, authority) {
   const lr = await call('space credential', HOST, 'GET', 'com.atproto.space.listRepos', {
     params: { space },
-    headers: await sigHeaders(cred.key, `Atproto-Space ${cred.token}`, authority),
+    headers: await sigHeaders(cred.key, `Atproto-Space-Credential ${cred.token}`, authority),
   })
   return (lr.body?.repos ?? []).map((r) => r.did)
 }
