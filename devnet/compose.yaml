@@ -10,7 +10,7 @@ name: ${HOST_PROJECT:-grouphost}
 services:
   grouphost:
     # The pinned alpha PDS image, so @atproto/pds is exactly that build.
-    image: ghcr.io/bluesky-social/atproto@sha256:1cf9349e9f0e89789784569fed376cd647742ea7c368948625f44779ba03f150
+    image: ghcr.io/bluesky-social/atproto@sha256:3ebb6d0e2c587adb0142de6e95a9b11d5f4704a418cf1db33576d701688d945a
     container_name: ${HOST_CONTAINER:-grouphost-spike}
     user: root
     restart: unless-stopped

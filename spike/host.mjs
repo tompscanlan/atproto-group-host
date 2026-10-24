@@ -1,7 +1,7 @@
 // host.mjs: a THROWAWAY group-host spike, not the product.
 //
 // Runs inside a container made from the spaces alpha PDS image (bluesky-social/atproto
-// permissioned-data-alpha 79d6307e1), so @atproto/pds is exactly the pinned build. It tests:
+// permissioned-data-alpha ac0c9f153, 2026-10-22), so @atproto/pds is exactly the pinned build. It tests:
 //   (a) the alpha PDS builds as a library through PDS.create, behind an outer express app;
 //   (b) a person signs in through their own PDS and the host signs the browser in as the GROUP
 //       with a one-time ticket fed to the PDS's own sign-in step, never the group's password;
