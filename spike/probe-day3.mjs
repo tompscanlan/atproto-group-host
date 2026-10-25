@@ -31,8 +31,8 @@ const membership = (did, roles) => ({ $type: `${NS}.membership`, member: did, ro
 const refusedAs = (r, status, error, reason) => r.status === status && r.body?.error === error && String(r.body?.message ?? '').includes(reason)
 const said = (r) => `${r.status} ${r.body?.error ?? ''}${r.body?.message ? ` (${r.body.message})` : ''}`
 
-// ---------- setup: alice creates a group and adds a moderator role ----------
-log('\n## setup: alice creates a group and adds a moderator role\n')
+// ---------- setup: alice creates a group, and the group adds a moderator role ----------
+log('\n## setup: alice creates a group, and the group adds a moderator role\n')
 const label = `d3g${Date.now().toString(36)}`
 const A = await groupSignIn(alice, { create: { label }, label: 'e-consent-alice-create', scopes: SCOPES })
 if (!A.ok) {
@@ -49,37 +49,45 @@ const create = (s, who, space, collection, rkey, record) =>
   as(s, who, 'POST', 'com.atproto.space.createRecord', { body: { space, repo: G, collection, ...(rkey ? { rkey } : {}), record: { $type: collection, ...record } } })
 const del = (s, who, space, collection, rkey) => as(s, who, 'POST', 'com.atproto.space.deleteRecord', { body: { space, repo: G, collection, rkey } })
 
+// The group itself adds the role and its grants: a role made after the group is in nobody's
+// `assignable` list, so no person may grant it anything.
+const writes = (list) => list.map(([verb, collection, rkey, record]) => ({ $type: `com.atproto.space.applyWrites#${verb}`, collection, rkey, value: { $type: collection, ...record } }))
+const asGroup = (space, list) => spike('as-group', { group: G, space, writes: writes(list) })
 const setup = [
-  await create(A.session, 'alice for the group', MEM, `${NS}.role`, 'moderator', { displayName: 'Moderator' }),
-  await put(MEM, `${NS}.permissions`, 'self', {
-    grants: [
-      {
-        role: 'admin',
-        scopes: ['space:*?action=read_self&manage=create&manage=delete', 'space:*?collection=com.atproto.label.label&action=create&action=update&action=delete'],
-        assignable: ['admin', 'member', 'moderator'],
-      },
-      { role: 'member', scopes: [], assignable: [] },
-      { role: 'moderator', scopes: [], assignable: ['member'] },
-    ],
-  }),
-  await put(MEM, `${NS}.access`, 'self', {
-    grants: [
-      { role: 'admin', scopes: [`space:${MEMBERS}?collection=*`] },
-      { role: 'member', scopes: [`space:${MEMBERS}?action=read`] },
-      { role: 'moderator', scopes: [`space:${MEMBERS}?collection=${NS}.membership`] },
-    ],
-  }),
-  await put(MET, `${NS}.access`, 'self', {
-    public: false,
-    grants: [
-      { role: 'admin', scopes: [`space:${META}?collection=*`] },
-      { role: 'member', scopes: [`space:${META}?action=read`] },
-      { role: 'moderator', scopes: [`space:${META}?action=read`] },
-    ],
-  }),
+  await asGroup(MEM, [
+    ['create', `${NS}.role`, 'moderator', { displayName: 'Moderator' }],
+    ['update', `${NS}.permissions`, 'self', {
+      grants: [
+        {
+          role: 'admin',
+          scopes: ['space:*?action=read_self&manage=create&manage=delete', 'space:*?collection=com.atproto.label.label&action=create&action=update&action=delete'],
+          assignable: ['admin', 'member', 'moderator'],
+        },
+        { role: 'member', scopes: [], assignable: [] },
+        { role: 'moderator', scopes: [], assignable: ['member'] },
+      ],
+    }],
+    ['update', `${NS}.access`, 'self', {
+      grants: [
+        { role: 'admin', scopes: [`space:${MEMBERS}?collection=*`] },
+        { role: 'member', scopes: [`space:${MEMBERS}?action=read`] },
+        { role: 'moderator', scopes: [`space:${MEMBERS}?collection=${NS}.membership`] },
+      ],
+    }],
+  ]),
+  await asGroup(MET, [
+    ['update', `${NS}.access`, 'self', {
+      public: false,
+      grants: [
+        { role: 'admin', scopes: [`space:${META}?collection=*`] },
+        { role: 'member', scopes: [`space:${META}?action=read`] },
+        { role: 'moderator', scopes: [`space:${META}?action=read`] },
+      ],
+    }],
+  ]),
 ]
-const setupOk = setup.every((r) => r.status === 200)
-log(`- setup writes: ${setup.map((r) => r.status).join(' ')}`)
+const setupOk = setup.every((r) => !r.error)
+log(`- setup writes, as the group: ${setup.map((r) => r.error ?? 'ok').join(' ')}`)
 
 // ---------- e1 ----------
 log('\n## e1 a space credential follows the roles in the access record\n')

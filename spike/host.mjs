@@ -13,8 +13,8 @@
 //   (e) prompt=create makes a group: the account, its meta and members spaces, and their records;
 //   (f) the host enforces from those records: checkUserAccess answers from `access` and the
 //       person's roles, group writes pass the record rules and the writer's `assignable` roles
-//       before the PDS takes them, writes to a space with no `access` record are refused, and
-//       nobody reconfigures a group space through simplespace;
+//       before the PDS takes them, nobody grants more than they hold, writes to a space with no
+//       `access` record are refused, and nobody reconfigures a group space through simplespace;
 //   (g) a person's own acts on a group (requestJoin, cancelJoinRequest, leaveGroup) come with
 //       service auth from their own PDS, not a group session, and the host acts on them as the
 //       group;
@@ -446,6 +446,13 @@ async function seedRecords(did, jwt, { label, creatorDid }) {
       {
         role: 'admin',
         scopes: [
+          // The proposal's permission sets, as its example `permissions` record grants an admin,
+          // so a group session that asks for a set gets it whole. Where the group lexicons do not
+          // resolve a set grants nothing, and the scopes below still hold.
+          `include:${NS}.configure`,
+          `include:${NS}.manageSpaces`,
+          `include:${NS}.manageMembers`,
+          `include:${NS}.moderate`,
           'space:*?action=read_self&manage=create&manage=delete',
           // Read and write in every group space, ones made later included, so a session the
           // creator authorizes at create already covers the spaces an app adds next (TS, 2026-10-15).
@@ -856,6 +863,34 @@ async function badScopes(scopes, groupDid) {
   return bad
 }
 
+// No granting more than you hold (proposal.md at 2b41a9b, the paragraph after the session
+// rules): in an `access` or `permissions` write a person changes only the entries of roles they
+// may assign, adds only scopes their own roles cover once permission sets are expanded, and adds
+// to an `assignable` list only roles they may assign. `before` and `after` are the record's grants
+// (null for none); `space` is the access record's space, or null for `permissions`.
+const sortedSet = (a) => [...new Set(a ?? [])].sort()
+const sameEntry = (a, b) =>
+  !a === !b && (!a || JSON.stringify([sortedSet(a.scopes), sortedSet(a.assignable)]) === JSON.stringify([sortedSet(b.scopes), sortedSet(b.assignable)]))
+async function beyondOwn(groupDid, mine, before, after, space) {
+  const entry = (grants, role) => (grants ?? []).find((g) => g.role === role)
+  const mayAssign = new Set(mine.assignable)
+  for (const role of new Set([...(before ?? []), ...(after ?? [])].map((g) => g.role))) {
+    const was = entry(before, role)
+    const now = entry(after, role)
+    if (sameEntry(was, now)) continue
+    if (!mayAssign.has(role)) return `your roles cannot change the grants of ${role}`
+    for (const sc of now?.scopes ?? []) {
+      if (was?.scopes?.includes(sc)) continue
+      const parts = (await provider.lexiconManager.buildTokenScope(sc, groupDid)).split(' ')
+      const pinned = space ? parts.map((p) => pinToSpace(p, space, groupDid)).filter(Boolean) : parts
+      if (!pinned.every((p) => covered(p, mine))) return `your roles do not hold ${sc}`
+    }
+    const added = (now?.assignable ?? []).filter((r) => !was?.assignable?.includes(r) && !mayAssign.has(r))
+    if (added.length) return `your roles cannot assign ${[...new Set(added)].join(', ')}`
+  }
+  return null
+}
+
 // The checks a group write must pass before the PDS takes it (proposal.md:46, :67; the record
 // lexicons). `ops` is one write, or every write of an applyWrites, checked in order against the
 // state the earlier ones leave. Returns a refusal, or null.
@@ -868,7 +903,12 @@ async function checkGroupWrites(groupDid, space, ops, caller) {
   const roles = new Set(g.roles.map((r) => r.rkey))
   const memberships = new Map(g.memberships.map((r) => [r.rkey, r.value]))
   // The group DID itself holds every permission (proposal.md:44); a person holds their roles'.
-  const assignable = caller.personDid ? new Set((await grantsFor(groupDid, caller.personDid)).assignable) : null
+  const mine = caller.personDid ? await grantsFor(groupDid, caller.personDid) : null
+  const assignable = mine && new Set(mine.assignable)
+  const grantsNow = new Map([
+    [COLLECTION.access, g.access.find((a) => a.space.uri === space)?.value?.grants ?? null],
+    [COLLECTION.permissions, type === MEMBERS ? (g.permissions?.grants ?? null) : null],
+  ])
   for (const op of ops) {
     if (MEMBERS_ONLY.has(op.collection) && type !== MEMBERS) return invalid(`${op.collection} belongs in the members space`)
     if (op.collection === COLLECTION.role) {
@@ -909,6 +949,14 @@ async function checkGroupWrites(groupDid, space, ops, caller) {
       if (unknown.length) return refuse(400, 'UnknownRole', `the group declares no role ${[...new Set(unknown)].join(', ')}`)
       const bad = await badScopes(grants.flatMap((gr) => gr.scopes ?? []), groupDid)
       if (bad.length) return refuse(400, 'InvalidScope', `not OAuth scopes, or do not resolve: ${bad.join(' ')}`)
+    }
+    if ((op.collection === COLLECTION.access || op.collection === COLLECTION.permissions) && op.rkey === 'self') {
+      const after = op.action === 'delete' ? null : (op.value?.grants ?? [])
+      if (mine) {
+        const over = await beyondOwn(groupDid, mine, grantsNow.get(op.collection), after, op.collection === COLLECTION.access ? parseSpace(space) : null)
+        if (over) return forbidden(over)
+      }
+      grantsNow.set(op.collection, after)
     }
   }
   return null
@@ -1216,7 +1264,7 @@ function groupMethod(name, verb, handler, auth = groupAuth) {
       const { credentials } = await auth({ req, res, params: { lxm: nsid, aud: MANAGING_APP } })
       const caller = callerOf(req)
       Object.assign(call, { group: credentials.did, person: caller.personDid ?? (caller.legacy ? 'the group itself' : null) })
-      const out = await handler({ group: credentials.did, credentials, input: verb === 'GET' ? req.query : (req.body ?? {}), call })
+      const out = await handler({ group: credentials.did, credentials, caller, input: verb === 'GET' ? req.query : (req.body ?? {}), call })
       if (out === undefined) res.status(200).end()
       else res.json(out)
     } catch (err) {
@@ -1279,7 +1327,7 @@ const isGrant = (g) => typeof g?.role === 'string' && g.role.length <= 512 && is
 groupMethod(
   'createSpace',
   'POST',
-  async ({ group, credentials, input: { type, skey = TID.nextStr(), access, index = true }, call }) => {
+  async ({ group, credentials, caller, input: { type, skey = TID.nextStr(), access, index = true }, call }) => {
     if (typeof type !== 'string' || !isValidNsid(type)) throw new Refusal(400, 'InvalidRequest', 'type must be an NSID')
     if (typeof skey !== 'string' || !isValidRecordKey(skey)) throw new Refusal(400, 'InvalidRequest', 'skey must be a record key')
     if (typeof index !== 'boolean') throw new Refusal(400, 'InvalidRequest', 'index must be a boolean')
@@ -1298,6 +1346,10 @@ groupMethod(
     if (unknown.length) throw new Refusal(400, 'UnknownRole', `the group declares no role ${unknown.join(', ')}`)
     const bad = await badScopes(grants.flatMap((gr) => gr.scopes), group)
     if (bad.length) throw new Refusal(400, 'InvalidScope', `not OAuth scopes, or do not resolve: ${bad.join(' ')}`)
+    if (caller.personDid) {
+      const over = await beyondOwn(group, await grantsFor(group, caller.personDid), null, grants, { uri: ref.toString(), type, skey })
+      if (over) throw new Refusal(403, 'Forbidden', over)
+    }
     const space = ref.toString()
     // The PDS's own check for an existing space (a deleted one included): SpaceAlreadyExists.
     await pds.ctx.simpleSpaceManager.createSpace(space, { readPolicy: MA, writePolicy: MA, appAccess: { $type: 'com.atproto.simplespace.defs#open' } })
@@ -1345,6 +1397,18 @@ outer.post('/spike/bare-space', async (req, res, next) => {
     const { group, skey } = req.body
     await xrpc('com.atproto.simplespace.createSpace', { spaceType: META, skey, readPolicy: MA, writePolicy: MA, appAccess: { $type: 'com.atproto.simplespace.defs#open' } }, await groupJwt(group))
     res.json({ space: spaceUri(group, META, skey) })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// Records written as the group itself, which holds every permission (proposal.md:44). A probe's
+// setup for a role made after the group needs it: that role is in nobody's `assignable` list, so
+// no person may grant it anything.
+outer.post('/spike/as-group', async (req, res, next) => {
+  try {
+    const { group, space, writes } = req.body
+    res.json(await xrpc('com.atproto.space.applyWrites', { space, repo: group, writes }, await groupJwt(group)))
   } catch (err) {
     next(err)
   }

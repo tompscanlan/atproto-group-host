@@ -36,7 +36,9 @@ all seven, and the third all eight.
    grant now. Removing a member closed their open session on the next request.
 6. **`prompt=create` makes a group.** The creator signs in through their own PDS. The host creates
    the account, the `meta` and `members` spaces, an `access` record in each, a `profile`,
-   `permissions`, the `admin` and `member` roles, and the creator's `admin` membership. Its page
+   `permissions`, the `admin` and `member` roles, and the creator's `admin` membership. The
+   `admin` role holds the proposal's four permission sets, as the proposal's example record
+   grants them, so an app's group session that asks for a set gets it whole. Its page
    asks only for the group's address and the creator's own handle, as a PDS's own sign-up asks only
    for the handle. It turns down an address the PDS would refuse (over 18 characters, reserved,
    caught by its word filter, or taken) on that page, before the creator goes to their PDS, so
@@ -53,6 +55,12 @@ all seven, and the third all eight.
    - a `membership` write needs every role added or removed, and every role of a member being
      ejected, in the writer's `assignable` roles. A moderator who may write memberships could admit
      a member, but not promote to admin or eject an admin;
+   - an `access` or `permissions` write, `createSpace`'s included, grants no more than the writer
+     holds, as the proposal has said since 2026-10-19: the writer changes only the entries of
+     roles in their `assignable` roles, adds only scopes their own roles cover once permission
+     sets are expanded, and makes assignable only roles they may assign themselves. A role made
+     after the group is in nobody's `assignable` list, so no person can grant it anything; only
+     the group itself can;
    - the record rules: a membership is keyed by the member DID and names declared roles; an
      `access` or `permissions` record has one grant per role, names declared roles, and has
      scopes that resolve; a role still held cannot be deleted;
@@ -168,6 +176,7 @@ cd spike
 "$DEVNET/scripts/https-run" node probe-in-step.mjs # 6 checks; restarts the host once
 "$DEVNET/scripts/https-run" node probe-public-signin.mjs # 2 checks; the sign-in runs by name alone
 "$DEVNET/scripts/https-run" node probe-subscribe-repos.mjs # 3 checks; a group's write arrives on subscribeRepos, the feed a relay follows
+"$DEVNET/scripts/https-run" node probe-grants.mjs # 6 checks; nobody grants more than they hold
 DEVNET=$DEVNET SG_PROJECT=$SG_PROJECT ./remote-signin.sh # the same probe from a container with its own network, as a browser on another machine
 ```
 
