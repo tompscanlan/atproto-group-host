@@ -44,6 +44,13 @@ all seven, and the third all eight.
    caught by its word filter, or taken) on that page, before the creator goes to their PDS, so
    the creator picks another without starting again from the app. The starting `profile` is named
    after the address; the app names the group by writing the profile.
+   **The creator gets the group's recovery key.** The host makes a keypair for each new group and
+   `createAccount` puts its public half first among the DID's rotation keys, ahead of the PDS's
+   own; the host reads the DID back from its PLC and refuses the create if the key is not first.
+   The private half is shown once, on the host's own page between the creator's sign-in and
+   consent, and kept nowhere: not in the state file, the log or the PDS. With it the creator can
+   move the group off this host without its help. The proposal is silent on recovery, so this is
+   the host's choice (`probe-recovery.mjs`, 5 of 5 on a local snowglobe, 2026-10-28).
 7. **The group sign-in is not remembered, and the consent page is the host's.** The ticket sign-in
    uses `remember: false`. The provider then returns a token good for this one request, and the
    host's own consent page uses it. No device stays signed in as the group.
@@ -86,6 +93,9 @@ all seven, and the third all eight.
 
 ## Not tested yet
 
+A create whose PLC does not list the recovery key first (the host removes the account; nothing
+makes that happen in a probe). A creator who stays on the recovery key page past the app's
+five-minute sign-in window (the host says the group is made and to sign in again from the app).
 Ticket replay. Telling other space hosts that a removed member's credentials are revoked: a
 credential already issued keeps working until it expires. The group methods (join, leave, join
 requests, `createSpace`). A confidential OAuth client at a real https origin. A person on a PDS
@@ -177,6 +187,7 @@ cd spike
 "$DEVNET/scripts/https-run" node probe-public-signin.mjs # 2 checks; the sign-in runs by name alone
 "$DEVNET/scripts/https-run" node probe-subscribe-repos.mjs # 3 checks; a group's write arrives on subscribeRepos, the feed a relay follows
 "$DEVNET/scripts/https-run" node probe-grants.mjs # 6 checks; nobody grants more than they hold
+"$DEVNET/scripts/https-run" node probe-recovery.mjs # 5 checks; the creator's recovery key, shown once and kept nowhere
 DEVNET=$DEVNET SG_PROJECT=$SG_PROJECT ./remote-signin.sh # the same probe from a container with its own network, as a browser on another machine
 ```
 
@@ -190,7 +201,9 @@ share. It needs two things outside this repo:
 
 The day-2 and day-3 probes save consent screenshots under `spike/shots/<time>-<probe>/`, a folder per
 run that git ignores, so a run never overwrites an earlier one or the committed shots in `spike/`. To
-update a committed shot, copy the new one over it on purpose. The first round's `probe.mjs` no longer runs, because the host now
+update a committed shot, copy the new one over it on purpose. No probe captures the recovery key page, which
+holds a private key: `lib.mjs` clicks through it without a screenshot or a read of its text, and
+`probe-recovery.mjs` reads the key only into memory and prints nothing of it but its public half. The first round's `probe.mjs` no longer runs, because the host now
 refuses its setup calls.
 
 ### Using the host from an app

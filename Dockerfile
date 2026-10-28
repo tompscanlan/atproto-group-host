@@ -1,5 +1,5 @@
 # The group host as an image, for a cluster: the pinned spaces-alpha PDS image (the host runs
-# @atproto/pds as a library, so it is exactly that build) with spike/host.mjs and its two
+# @atproto/pds as a library, so it is exactly that build) with spike/host.mjs and its three
 # dependencies added. Build from the repo root:
 #   docker build -t <registry>/atproto-group-host:<git sha> .
 # Nothing is fetched when the container starts. devnet/compose.yaml mounts spike/ instead and does not use this.

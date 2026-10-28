@@ -10,7 +10,8 @@
 //   (d) the person's roles come from the group's own records: the host offers only the scopes
 //       those roles grant, records which person authorized each token, and cuts each token's
 //       scopes on every request to what that person's roles grant now;
-//   (e) prompt=create makes a group: the account, its meta and members spaces, and their records;
+//   (e) prompt=create makes a group: the account, its meta and members spaces, and their records,
+//       with the creator's own recovery key first among the DID's rotation keys, shown once;
 //   (f) the host enforces from those records: checkUserAccess answers from `access` and the
 //       person's roles, group writes pass the record rules and the writer's `assignable` roles
 //       before the PDS takes them, nobody grants more than they hold, writes to a space with no
@@ -30,9 +31,11 @@ import { PDS, envToCfg, envToSecrets, readEnv } from '/app/packages/pds/dist/ind
 import { verifyJwt } from '/app/packages/xrpc-server/dist/auth.js'
 import { reservedSubdomains } from '/app/packages/pds/dist/handle/reserved.js'
 import { hasExplicitSlur } from '/app/packages/pds/dist/handle/explicit-slurs.js'
+import { AUTHORIZATION_INACTIVITY_TIMEOUT } from '/app/packages/oauth/oauth-provider/dist/oauth-constants.js'
 import { BlobPermission, RepoPermission, SpacePermission, isAtprotoOauthScope } from '/app/packages/oauth/oauth-scopes/dist/index.js'
 import { TID } from '/app/packages/common-web/dist/index.js'
 import { SpaceRef, isValidDid, isValidNsid, isValidRecordKey } from '/app/packages/syntax/dist/index.js'
+import { Secp256k1PrivateKeyExportable } from '@atcute/crypto'
 import { OAuthClient, OAuthCallbackError, MemoryStore } from '@atcute/oauth-node-client'
 import {
   CompositeDidDocumentResolver,
@@ -366,24 +369,45 @@ async function addressProblem(label) {
   return byHandle || byEmail ? addressRefusal('taken', label) : null
 }
 
+// Whether the group's DID, as its PLC holds it now, has `key` first among its rotation keys. The
+// PLC is asked, not the request: the key first is what lets the creator move the group without
+// this host, since the first key wins any conflict there.
+async function recoveryKeyFirst(did, key) {
+  const res = await fetch(new URL(`/${did}/data`, cfg.identity.plcUrl))
+  if (!res.ok) throw new Error(`the PLC answered ${res.status} for ${did}`)
+  const { rotationKeys } = await res.json()
+  if (!Array.isArray(rotationKeys) || rotationKeys[0] !== key) {
+    throw new Error(`${did}'s first rotation key is ${JSON.stringify(rotationKeys?.[0] ?? null)}, not the creator's`)
+  }
+}
+
 // A create that fails once its account exists removes the account, so the address is free again
 // and no group is left without an admin. `afterAccount` is the probes' way to cut it short there
 // (/spike/interrupted-create).
+//
+// The creator gets a recovery key: a new keypair whose public half createAccount puts first
+// among the DID's rotation keys, ahead of the PDS's own. The private half is returned for the
+// creator to see once, and is never written down here, not in the state file, a log or the PDS.
+// The proposal is silent on recovery; this is the host's choice (spec 001 FR-001g, om-3r2nx.7).
 async function createGroup({ label, creatorDid, afterAccount }) {
   const handle = `${label}${HANDLE_DOMAIN}`
   creates.set(handle, { handle, creatorDid, startedAt: new Date().toISOString() })
   persist()
-  let did
+  let did, recoveryKey
   try {
+    const keypair = await Secp256k1PrivateKeyExportable.createKeypair()
+    const recoveryDid = await keypair.exportPublicKey('did')
     // The PDS's createAccount needs a password. This one is random, used for the seeding calls
     // below, and dropped: nobody ever sees or holds it. The product should create the account
     // with no password at all.
     const password = crypto.randomBytes(32).toString('base64url')
-    const acct = await xrpc('com.atproto.server.createAccount', { handle, email: groupEmail(label), password })
+    const acct = await xrpc('com.atproto.server.createAccount', { handle, email: groupEmail(label), password, recoveryKey: recoveryDid })
     did = acct.did
     creates.set(handle, { ...creates.get(handle), did })
     persist()
     await afterAccount?.(did)
+    await recoveryKeyFirst(did, recoveryDid)
+    recoveryKey = { did: recoveryDid, secret: await keypair.exportPrivateKey('multikey') }
     await seedRecords(did, acct.accessJwt, { label, creatorDid })
   } catch (err) {
     try {
@@ -398,8 +422,8 @@ async function createGroup({ label, creatorDid, afterAccount }) {
   }
   creates.delete(handle)
   persist()
-  log('group created', { did, handle, creatorDid })
-  return { did, handle }
+  log('group created', { did, handle, creatorDid, recoveryKey: recoveryKey.did })
+  return { did, handle, recoveryKey }
 }
 
 // Removes a group the host made but did not finish, as the PDS's own admin deleteAccount does: the
@@ -632,7 +656,8 @@ outer.get('/signin/start', async (req, res, next) => {
   try {
     const state = String(req.query.state ?? '')
     const p = pending.get(state)
-    if (!p) return res.status(400).send('unknown sign-in')
+    // A made group's sign-in is past this page: it goes on only from the recovery key page.
+    if (!p || p.mode === 'created') return res.status(400).send('unknown sign-in')
     if (req.query.handle === undefined) {
       // A first visit, or back from a create that failed after the person signed in.
       const { problem } = p
@@ -684,48 +709,99 @@ outer.get('/signin/callback', async (req, res, next) => {
     pending.delete(state?.s)
     if (!p) return res.status(400).send('unknown sign-in')
     // Who may create a group is the host's call; the spike lets anyone signed in.
-    let group = { did: p.groupDid }
-    if (p.mode === 'create') {
-      try {
-        group = await createGroup({ label: p.label, creatorDid: personDid })
-      } catch (err) {
-        // Back to the sign-in page with the reason. The app's request is still open, so the person
-        // picks another address there instead of starting again from the app.
-        log('group create failed', { label: p.label, personDid, err: err.message })
-        p.problem = (await addressProblem(p.label)) ?? { reason: 'create', text: `The group could not be made (${err.message}). Try again.` }
-        pending.set(state.s, p)
-        return res.redirect(`${PUBLIC_URL}/signin/start?${new URLSearchParams({ state: state.s })}`)
-      }
+    if (p.mode !== 'create') return await toConsent(res, p, { did: p.groupDid }, personDid)
+    let group
+    try {
+      group = await createGroup({ label: p.label, creatorDid: personDid })
+    } catch (err) {
+      // Back to the sign-in page with the reason. The app's request is still open, so the person
+      // picks another address there instead of starting again from the app.
+      log('group create failed', { label: p.label, personDid, err: err.message })
+      p.problem = (await addressProblem(p.label)) ?? { reason: 'create', text: `The group could not be made (${err.message}). Try again.` }
+      pending.set(state.s, p)
+      return res.redirect(`${PUBLIC_URL}/signin/start?${new URLSearchParams({ state: state.s })}`)
     }
-    const grants = await grantsFor(group.did, personDid)
-    log('person signed in through own PDS', { personDid, groupDid: group.did, mode: p.mode, roles: grants.roles })
-    if (!grants.roles.length) {
-      refusals.push({ at: new Date().toISOString(), by: 'sign-in', group: group.did, personDid, message: 'holds no role' })
-      return res.status(403).send(`You (${personDid}) hold no role in ${group.did}`)
-    }
-
-    // Offer only what the roles grant: rewrite the pending request's scope before consent.
+    // The recovery key goes in this response and nowhere else, so a reload cannot show it again:
+    // this callback's state is spent. Consent follows from Continue, which mints the ticket then,
+    // so the ticket's two minutes start after the key is saved. The app's request is extended
+    // here as the provider extends it on each step, five minutes of inactivity.
+    const { recoveryKey, ...made } = group
     const id = reqId(p.requestUri)
     const data = await store.readRequest(id)
-    const { kept, dropped } = await narrowRequested(data.parameters.scope, grants, group.did)
-    const { prompt, ...rest } = data.parameters
-    await store.updateRequest(id, { parameters: { ...rest, scope: kept.join(' '), login_hint: group.did } })
-    requestPerson.set(id, personDid)
-    const groupHandle = group.handle ?? (await pds.ctx.accountManager.getAccount(group.did))?.handle
-    consent.set(p.requestUri, { groupDid: group.did, groupHandle, personDid, roles: grants.roles, clientId: p.clientId, kept, dropped, created: p.mode === 'create' })
-    log('scopes offered', { personDid, roles: grants.roles, kept, dropped })
-
-    const t = crypto.randomBytes(24).toString('base64url')
-    tickets.set(t, { groupDid: group.did, personDid, exp: Date.now() + 120_000 })
-    // The ticket rides the URL fragment, never sent to a server and never in a referrer, and not
-    // a cookie, which the sign-in step of the provider's own page would not see.
-    const q = new URLSearchParams({ request_uri: p.requestUri, client_id: p.clientId, gh: 'ticket' })
-    const frag = new URLSearchParams({ t, g: group.did })
-    res.redirect(`${PUBLIC_URL}/oauth/authorize?${q}#${frag}`)
+    if (data && data.expiresAt > new Date()) await store.updateRequest(id, { expiresAt: new Date(Date.now() + AUTHORIZATION_INACTIVITY_TIMEOUT) })
+    pending.set(state.s, { ...p, mode: 'created', group: made, personDid })
+    res.set({ 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' })
+    res.type('html').send(recoveryKeyPage(state.s, made, recoveryKey))
   } catch (err) {
     next(err)
   }
 })
+
+// The person has the recovery key; on to the host's consent for the app's request. If that
+// request has run out meanwhile, the group stands and the person is its admin: the app's sign-in
+// as the group starts again from the app.
+outer.get('/signin/created', async (req, res, next) => {
+  try {
+    const s = String(req.query.state ?? '')
+    const p = pending.get(s)
+    if (p?.mode !== 'created') return res.status(400).send('unknown sign-in')
+    pending.delete(s)
+    const data = await store.readRequest(reqId(p.requestUri))
+    if (!data || data.expiresAt < new Date()) {
+      log('app request ran out on the recovery key page', { groupDid: p.group.did, personDid: p.personDid })
+      return res.status(410).type('html').send(`<!doctype html><title>Group made</title>
+<p id=made>The group @${esc(p.group.handle)} is made, and you are its admin. The app's sign-in ran out while the key was shown, so go back to the app and sign in to the group from there.</p>`)
+    }
+    await toConsent(res, p, p.group, p.personDid)
+  } catch (err) {
+    next(err)
+  }
+})
+
+// Shown once, in the response to the sign-in that made the group. It says what the key does and
+// what it does not, as spec 001 FR-001i asks of the one-time key panel. `data-did` is the key's
+// public half, which the group's PLC lists first among its rotation keys.
+function recoveryKeyPage(state, group, key) {
+  return `<!doctype html><title>Save the recovery key for @${esc(group.handle)}</title>
+<main id=recovery data-did="${esc(key.did)}">
+<h1>Save the recovery key for @${esc(group.handle)}</h1>
+<p>This is the only time it is shown. This host does not keep it.</p>
+<p>With it you can move the group to another host without this host's help: the group's identity record lists it ahead of this host's own keys, so it wins any change to where the group lives. Without it you cannot. Anyone who gets it can do the same, so keep it private.</p>
+<p>It is not a password. It does not sign you in here; you act for the group as yourself, as its admin.</p>
+<p><label>Recovery key (private)<br><textarea id=recovery-key readonly rows=2 cols=70>${esc(key.secret)}</textarea></label></p>
+<p><small>Its public half, as the group's identity lists it: <code>${esc(key.did)}</code></small></p>
+<p><a id=continue href="${PUBLIC_URL}/signin/created?${new URLSearchParams({ state })}">I have saved it. Continue</a></p>
+</main>`
+}
+
+// What the person's roles grant, offered to the app's request on the host's own consent page.
+async function toConsent(res, p, group, personDid) {
+  const grants = await grantsFor(group.did, personDid)
+  log('person signed in through own PDS', { personDid, groupDid: group.did, mode: p.mode, roles: grants.roles })
+  if (!grants.roles.length) {
+    refusals.push({ at: new Date().toISOString(), by: 'sign-in', group: group.did, personDid, message: 'holds no role' })
+    return res.status(403).send(`You (${personDid}) hold no role in ${group.did}`)
+  }
+
+  // Offer only what the roles grant: rewrite the pending request's scope before consent.
+  const id = reqId(p.requestUri)
+  const data = await store.readRequest(id)
+  const { kept, dropped } = await narrowRequested(data.parameters.scope, grants, group.did)
+  const { prompt, ...rest } = data.parameters
+  await store.updateRequest(id, { parameters: { ...rest, scope: kept.join(' '), login_hint: group.did } })
+  requestPerson.set(id, personDid)
+  const groupHandle = group.handle ?? (await pds.ctx.accountManager.getAccount(group.did))?.handle
+  consent.set(p.requestUri, { groupDid: group.did, groupHandle, personDid, roles: grants.roles, clientId: p.clientId, kept, dropped, created: p.mode === 'created' })
+  log('scopes offered', { personDid, roles: grants.roles, kept, dropped })
+
+  const t = crypto.randomBytes(24).toString('base64url')
+  tickets.set(t, { groupDid: group.did, personDid, exp: Date.now() + 120_000 })
+  // The ticket rides the URL fragment, never sent to a server and never in a referrer, and not
+  // a cookie, which the sign-in step of the provider's own page would not see.
+  const q = new URLSearchParams({ request_uri: p.requestUri, client_id: p.clientId, gh: 'ticket' })
+  const frag = new URLSearchParams({ t, g: group.did })
+  res.redirect(`${PUBLIC_URL}/oauth/authorize?${q}#${frag}`)
+}
 
 // Ends the app's open request with access_denied at the app's redirect, as the provider does when
 // someone refuses on its own consent page (RFC 6749 4.1.2.1, with iss per RFC 9207). Without the

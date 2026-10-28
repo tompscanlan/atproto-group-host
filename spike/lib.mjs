@@ -145,7 +145,7 @@ export async function groupSignIn(person, { create, groupDid, label: shot, scope
   await new Promise((r) => server.listen(CB_PORT, '127.0.0.1', r))
   const browser = await launchBrowser(chromium)
   const typed = []
-  const out = { ok: false, app, typed, kept: [], dropped: [], consentText: null, refused: [], displayNameFields: null, start: null, seen: [] }
+  const out = { ok: false, app, typed, kept: [], dropped: [], consentText: null, refused: [], displayNameFields: null, start: null, seen: [], keyPage: false }
   try {
     const p = await (await browser.newContext()).newPage()
     p.on('request', (r) => out.seen.push(r.url().split('#')[0]))
@@ -196,6 +196,17 @@ export async function groupSignIn(person, { create, groupDid, label: shot, scope
     await p.getByRole('button', { name: 'Sign in' }).click()
     for (let i = 0; i < 120 && !cbUrl; i++) {
       const origin = new URL(p.url()).origin
+      // The recovery key page after a create holds the group's private recovery key. Nothing on
+      // it is captured: no screenshot, no innerText, no HTML. A probe that checks the key passes
+      // `create.onKey`, which gets the page; then Continue.
+      if (origin === HOST && (await p.locator('#recovery').count().catch(() => 0))) {
+        out.keyPage = true
+        log(`- ${now()} recovery key page (not captured)`)
+        if (create?.onKey) await create.onKey(p)
+        await Promise.all([p.waitForEvent('framenavigated', { predicate: (f) => f === p.mainFrame(), timeout: 30000 }), p.click('#continue')])
+        await p.waitForLoadState('load')
+        continue
+      }
       if (origin === HOST && (await p.locator('#consent').isVisible().catch(() => false))) {
         out.consentText = (await p.locator('#consent').innerText()).replace(/\s+/g, ' ')
         out.kept = await p.locator('#kept li').allInnerTexts()
@@ -227,7 +238,8 @@ export async function groupSignIn(person, { create, groupDid, label: shot, scope
     }
     log(`- fields typed: ${JSON.stringify(typed)}`)
     out.cbUrl = cbUrl
-    out.lastPage = { url: p.url().split('?')[0], body: (await p.locator('body').innerText().catch(() => '')).replace(/\s+/g, ' ').slice(0, 300) }
+    const keyShown = await p.locator('#recovery').count().catch(() => 0)
+    out.lastPage = { url: p.url().split('?')[0], body: keyShown ? '(the recovery key page, not read)' : (await p.locator('body').innerText().catch(() => '')).replace(/\s+/g, ' ').slice(0, 300) }
     if (!cbUrl || refuseOwn) return out
     const { session } = await app.callback(new URL(cbUrl).searchParams)
     return { ...out, ok: true, session }
