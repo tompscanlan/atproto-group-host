@@ -3,7 +3,7 @@
 # dependencies added. Build from the repo root:
 #   docker build -t <registry>/atproto-group-host:<git sha> .
 # Nothing is fetched when the container starts. devnet/compose.yaml mounts spike/ instead and does not use this.
-FROM ghcr.io/bluesky-social/atproto@sha256:3ebb6d0e2c587adb0142de6e95a9b11d5f4704a418cf1db33576d701688d945a
+FROM ghcr.io/bluesky-social/atproto@sha256:f003adf7ca7cbb8ff60a4d99323fd009dfc1259b208f468f71accf0366ecab1e
 USER root
 WORKDIR /spike
 COPY spike/package.json spike/package-lock.json ./

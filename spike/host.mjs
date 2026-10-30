@@ -1,11 +1,11 @@
 // host.mjs: a THROWAWAY group-host spike, not the product.
 //
 // Runs inside a container made from the spaces alpha PDS image (bluesky-social/atproto
-// permissioned-data-alpha ac0c9f153, 2026-10-22), so @atproto/pds is exactly the pinned build. It tests:
+// permissioned-data-alpha 11c5d98cd, 2026-10-29), so @atproto/pds is exactly the pinned build. It tests:
 //   (a) the alpha PDS builds as a library through PDS.create, behind an outer express app;
 //   (b) a person signs in through their own PDS and the host signs the browser in as the GROUP
 //       with a one-time ticket fed to the PDS's own sign-in step, never the group's password;
-//   (c) a group space under the managing-app policy calls back to this host's checkUserAccess,
+//   (c) a group space under the managedspace policy calls back to this host's checkUserAccess,
 //       and what the host answers is what the PDS enforces;
 //   (d) the person's roles come from the group's own records: the host offers only the scopes
 //       those roles grant, records which person authorized each token, and cuts each token's
@@ -15,7 +15,7 @@
 //   (f) the host enforces from those records: checkUserAccess answers from `access` and the
 //       person's roles, group writes pass the record rules and the writer's `assignable` roles
 //       before the PDS takes them, nobody grants more than they hold, writes to a space with no
-//       `access` record are refused, and nobody reconfigures a group space through simplespace;
+//       `access` record are refused, and nobody reconfigures, wipes or migrates a group space;
 //   (g) a person's own acts on a group (requestJoin, cancelJoinRequest, leaveGroup) come with
 //       service auth from their own PDS, not a group session, and the host acts on them as the
 //       group;
@@ -53,7 +53,7 @@ const HOST_DID = `did:web:${new URL(PUBLIC_URL).host}`
 const MANAGING_APP = `${HOST_DID}#group_host`
 // Every group space is made under this policy, so the PDS asks the host (checkUserAccess) who may
 // read and write it.
-const MA = { $type: 'com.atproto.simplespace.defs#managingAppPolicy', managingApp: MANAGING_APP }
+const MA = { $type: 'com.atproto.managedspace.policy', managingApp: MANAGING_APP }
 const LOOPBACK = process.env.HOST_LOOPBACK_URL // http://127.0.0.1:7070, how the host calls its own PDS
 const STATE_FILE = '/data/grouphost-state.json'
 const log = (...a) => console.log(new Date().toISOString(), '[host]', ...a)
@@ -75,7 +75,7 @@ const codePerson = new Map() // authorization code -> person DID, set when the r
 const authorizedBy = [] // { groupDid, personDid, at }: which person each group sign-in stands for
 const accessCalls = [] // every checkUserAccess the PDS made
 const narrowings = [] // every per-request cut, newest last (capped)
-const refusals = [] // every write, simplespace change or group sign-in the host refused, by its gate (no `by`), its PDS or its sign-in
+const refusals = [] // every write, space change or group sign-in the host refused, by its gate (no `by`), its PDS or its sign-in
 
 // Which person authorized each token. Kept on the data volume so a restart does not turn every
 // mapped token into an unmapped one (an unmapped token is cut to "atproto").
@@ -444,7 +444,7 @@ async function removeGroupAccount(did, why) {
 async function seedRecords(did, jwt, { label, creatorDid }) {
   const now = new Date().toISOString()
   for (const type of [META, MEMBERS]) {
-    await xrpc('com.atproto.simplespace.createSpace', { spaceType: type, skey: 'self', readPolicy: MA, writePolicy: MA, appAccess: { $type: 'com.atproto.simplespace.defs#open' } }, jwt)
+    await xrpc('com.atproto.space.createSpace', { spaceType: type, skey: 'self', policy: MA }, jwt)
   }
   const put = (type, collection, rkey, record) =>
     xrpc('com.atproto.space.createRecord', { space: spaceUri(did, type), repo: did, collection, rkey, record: { $type: collection, ...record } }, jwt)
@@ -1141,38 +1141,59 @@ async function followMetaAccess(group) {
   log('declaration brought down: the meta space is not public', { group })
 }
 
-// Nobody reconfigures a group space through simplespace, the group's own sessions included: a
-// space's policy follows its `access` record, and only the host changes it.
-const SIMPLESPACE_CHANGES = ['createSpace', 'updateSpace', 'deleteSpace', 'putMember', 'removeMember']
-outer.post(
-  SIMPLESPACE_CHANGES.map((n) => `/xrpc/com.atproto.simplespace.${n}`),
-  express.json({ limit: '1mb', type: () => true }),
-  async (req, res, next) => {
-    try {
-      const caller = callerOf(req)
-      if (caller.internal) return next()
-      const authority = req.body?.space ? parseSpace(req.body.space).authority : caller.sub
-      if (await isHosted(authority)) {
-        const nsid = req.path.split('.').pop()
-        const refusal = forbidden(`group spaces change only through the group host, not ${nsid}`)
-        refusals.push({ at: new Date().toISOString(), nsid, group: authority, personDid: caller.personDid ?? null, ...refusal })
-        log('simplespace change refused', { nsid, authority })
-        return res.status(refusal.status).json(refusalBody(refusal))
-      }
-      next()
-    } catch (err) {
-      next(err)
+// Nobody reconfigures, wipes or migrates a group space, the group's own sessions included: a
+// space's policy follows its `access` record, and only the host changes it. Wiping
+// (clearRecords), pruning writers (removeWriter) and account migration are refused for now, so a
+// group cannot yet move to another host: a gap to close, not a decision (TS, 2026-10-30).
+const SPACE_CHANGES = [
+  'com.atproto.space.createSpace',
+  'com.atproto.space.updateSpace',
+  'com.atproto.space.deleteSpace',
+  'com.atproto.space.clearRecords',
+  'com.atproto.space.removeWriter',
+  'com.atproto.memberspace.putMember',
+  'com.atproto.memberspace.removeMember',
+]
+// The imports carry an archive, not JSON, and act on the caller's own account.
+const SPACE_IMPORTS = ['com.atproto.space.importSpaceMeta', 'com.atproto.space.importRepo']
+const spaceGuard = (authorityOf) => async (req, res, next) => {
+  try {
+    const caller = callerOf(req)
+    if (caller.internal) return next()
+    const authority = authorityOf(req, caller)
+    if (await isHosted(authority)) {
+      const nsid = req.path.split('.').pop()
+      const refusal = forbidden(`group spaces change only through the group host, not ${nsid}`)
+      refusals.push({ at: new Date().toISOString(), nsid, group: authority, personDid: caller.personDid ?? null, ...refusal })
+      log('space change refused', { nsid, authority })
+      return res.status(refusal.status).json(refusalBody(refusal))
     }
-  },
+    next()
+  } catch (err) {
+    next(err)
+  }
+}
+outer.post(
+  SPACE_CHANGES.map((n) => `/xrpc/${n}`),
+  express.json({ limit: '1mb', type: () => true }),
+  spaceGuard((req, caller) => (req.body?.space ? parseSpace(req.body.space).authority : caller.sub)),
+)
+outer.post(
+  SPACE_IMPORTS.map((n) => `/xrpc/${n}`),
+  spaceGuard((req, caller) => caller.sub),
+)
+outer.get(
+  '/xrpc/com.atproto.space.exportSpaceMeta',
+  spaceGuard((req, caller) => (req.query.space ? parseSpace(String(req.query.space)).authority : caller.sub)),
 )
 
 // The managing app's answer, now from the records.
-outer.get('/xrpc/com.atproto.simplespace.checkUserAccess', async (req, res) => {
+outer.get('/xrpc/com.atproto.managedspace.checkUserAccess', async (req, res) => {
   const { space, user, access: kind, clientId } = req.query
   let iss = null
   try {
     const jwt = (req.headers.authorization || '').replace(/^Bearer /, '')
-    const payload = await verifyJwt(jwt, MANAGING_APP, 'com.atproto.simplespace.checkUserAccess', (did, force) =>
+    const payload = await verifyJwt(jwt, MANAGING_APP, 'com.atproto.managedspace.checkUserAccess', (did, force) =>
       pds.ctx.idResolver.did.resolveAtprotoKey(did, force),
     )
     iss = payload.iss
@@ -1328,7 +1349,7 @@ memberMethod('leaveGroup', async ({ group, member, call }) => {
 // own service, `#group_host` in its DID document; the proposal's grants say `aud=*`.
 const groupAuth = pds.ctx.authVerifier.authorization({ authorize: (permissions, { params }) => permissions.assertRpc(params) })
 // For a method whose check needs the input (createSpace), the handler asserts it, as the PDS's
-// own simplespace.createSpace does.
+// own space.createSpace does.
 const groupSession = pds.ctx.authVerifier.authorization({ authorize: () => {} })
 
 function groupMethod(name, verb, handler, auth = groupAuth) {
@@ -1393,8 +1414,8 @@ groupMethod('denyJoinRequest', 'POST', async ({ group, input: { member }, call }
 })
 
 // createSpace (createSpace.json): manage=create for the space, checked the way the PDS's own
-// simplespace.createSpace checks it (proposal.md:214-221). The host makes the space under the
-// managing-app policy, so the PDS asks the host who may use it, then writes its `access` record
+// space.createSpace checks it (proposal.md:214-221). The host makes the space under the
+// managedspace policy, so the PDS asks the host who may use it, then writes its `access` record
 // and, unless `index` is false, an index entry in members. The host's own writes skip the write
 // gate, so the grants are checked here first and a refused request leaves nothing behind. Errors
 // are the lexicon's four; input the lexicon does not allow is InvalidRequest.
@@ -1428,7 +1449,7 @@ groupMethod(
     }
     const space = ref.toString()
     // The PDS's own check for an existing space (a deleted one included): SpaceAlreadyExists.
-    await pds.ctx.simpleSpaceManager.createSpace(space, { readPolicy: MA, writePolicy: MA, appAccess: { $type: 'com.atproto.simplespace.defs#open' } })
+    await pds.ctx.spacePolicyManager.createSpace(space, MA)
     const jwt = await groupJwt(group)
     const record = { $type: `${NS}.access`, ...(access.public === undefined ? {} : { public: access.public }), grants: grants.map(({ role, scopes }) => ({ role, scopes })) }
     const accessRef = await xrpc('com.atproto.space.createRecord', { space, repo: group, collection: `${NS}.access`, rkey: 'self', record }, jwt)
@@ -1471,7 +1492,7 @@ outer.get('/spike/state', async (req, res) => {
 outer.post('/spike/bare-space', async (req, res, next) => {
   try {
     const { group, skey } = req.body
-    await xrpc('com.atproto.simplespace.createSpace', { spaceType: META, skey, readPolicy: MA, writePolicy: MA, appAccess: { $type: 'com.atproto.simplespace.defs#open' } }, await groupJwt(group))
+    await xrpc('com.atproto.space.createSpace', { spaceType: META, skey, policy: MA }, await groupJwt(group))
     res.json({ space: spaceUri(group, META, skey) })
   } catch (err) {
     next(err)

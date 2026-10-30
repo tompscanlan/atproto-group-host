@@ -5,7 +5,7 @@
 //   e4  the 10-11 walk's member refusals: a plain member's session is refused all five
 //   e5  a removed member gets no credential and is not tracked as a writer
 //   e6  a public `access` record lets anyone read that space, and only that one
-//   e7  nobody reconfigures a group space through simplespace, an admin's session included
+//   e7  nobody reconfigures, wipes or migrates a group space, an admin's session included
 //   e8  the group writes only in spaces that have an `access` record
 // Run: ../../atproto-devnet/scripts/https-run node probe-day3.mjs 2>&1 | tee run-day3.log
 import {
@@ -203,13 +203,17 @@ const b6mem = await credentialFor(bobOwn, MEM)
 verdict('e6', pub.status === 200 && b6meta.status === 200 && b6mem.status !== 200, `meta made public: bob (no role) gets a meta credential ${b6meta.status} and still none for members ${b6mem.status}`)
 
 // ---------- e7 ----------
-log('\n## e7 no simplespace reconfiguration of group spaces\n')
-const PUBLIC = { $type: 'com.atproto.simplespace.defs#publicPolicy' }
+log('\n## e7 nobody reconfigures, wipes or migrates a group space\n')
+const OPEN = { $type: 'com.atproto.memberspace.policy', publicRead: true, publicWrite: true }
 const ss = [
-  ['createSpace', await asA('POST', 'com.atproto.simplespace.createSpace', { spaceType: META, skey: 'e7', readPolicy: PUBLIC, writePolicy: PUBLIC, appAccess: { $type: 'com.atproto.simplespace.defs#open' } })],
-  ['updateSpace', await asA('POST', 'com.atproto.simplespace.updateSpace', { space: MEM, readPolicy: PUBLIC })],
-  ['putMember', await asA('POST', 'com.atproto.simplespace.putMember', { space: MEM, did: bob.did, read: true, write: true })],
-  ['deleteSpace', await asA('POST', 'com.atproto.simplespace.deleteSpace', { space: MEM })],
+  ['createSpace', await asA('POST', 'com.atproto.space.createSpace', { spaceType: META, skey: 'e7', policy: OPEN })],
+  ['updateSpace', await asA('POST', 'com.atproto.space.updateSpace', { space: MEM, policy: OPEN })],
+  ['putMember', await asA('POST', 'com.atproto.memberspace.putMember', { space: MEM, did: bob.did, read: true, write: true })],
+  ['clearRecords', await asA('POST', 'com.atproto.space.clearRecords', { space: MEM, repo: G })],
+  ['removeWriter', await asA('POST', 'com.atproto.space.removeWriter', { space: MEM, did: G })],
+  ['exportSpaceMeta', await as(A.session, 'alice for the group', 'GET', 'com.atproto.space.exportSpaceMeta', { params: { space: MEM } })],
+  ['importSpaceMeta', await asA('POST', 'com.atproto.space.importSpaceMeta', {})],
+  ['deleteSpace', await asA('POST', 'com.atproto.space.deleteSpace', { space: MEM })],
 ]
 const still = await listRecords(A.session, 'alice for the group', G, MEMBERS)
 verdict('e7', ss.every(([, r]) => refusedAs(r, 403, 'Forbidden', 'only through the group host')) && still.status === 200, `alice's admin session (it holds manage=create and manage=delete): ${ss.map(([n, r]) => `${n} ${said(r)}`).join('; ')}; members space still reads ${still.status}`)

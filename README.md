@@ -72,9 +72,12 @@ all seven, and the third all eight.
      `access` or `permissions` record has one grant per role, names declared roles, and has
      scopes that resolve; a role still held cannot be deleted;
    - the group writes only in spaces that have an `access` record.
-9. **Nobody reconfigures a group space through simplespace.** `createSpace`, `updateSpace`,
-   `putMember`, `removeMember` and `deleteSpace` are refused for group spaces, an admin's session
-   included. Only the host's own code changes a group space's policy.
+9. **Nobody reconfigures, wipes or migrates a group space.** `com.atproto.space` `createSpace`,
+   `updateSpace`, `deleteSpace`, `clearRecords`, `removeWriter`, the migration calls
+   (`exportSpaceMeta`, `importSpaceMeta`, `importRepo`) and `com.atproto.memberspace` `putMember`
+   and `removeMember` are refused for group spaces, an admin's session included. Only the host's
+   own code changes a group space's policy. Refusing migration means a group cannot yet move to
+   another host: a gap to close, not a decision (TS, 2026-10-30).
 
 ## What the spike found
 
