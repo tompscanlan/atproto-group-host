@@ -1,8 +1,10 @@
-// host.mjs: a THROWAWAY group-host spike, not the product.
+// host.mjs: a group host for atproto groups, following the opensocial.group proposal. A group is an
+// account with its own DID, and this host is its PDS. docs/design.md explains the design.
 //
 // Runs inside a container made from the spaces alpha PDS image (bluesky-social/atproto
-// permissioned-data-alpha 11c5d98cd, 2026-10-29), so @atproto/pds is exactly the pinned build. It tests:
-//   (a) the alpha PDS builds as a library through PDS.create, behind an outer express app;
+// permissioned-data-alpha 11c5d98cd, 2026-10-29), so @atproto/pds is exactly the pinned build.
+// The sections below, (a) to (h):
+//   (a) the alpha PDS runs as a library through PDS.create, behind an outer express app;
 //   (b) a person signs in through their own PDS and the host signs the browser in as the GROUP
 //       with a one-time ticket fed to the PDS's own sign-in step, never the group's password;
 //   (c) a group space under the managedspace policy calls back to this host's checkUserAccess,
@@ -48,7 +50,7 @@ import {
 const require = createRequire('/app/packages/pds/package.json')
 const express = require('express')
 
-const PUBLIC_URL = process.env.HOST_PUBLIC_URL // https://grouphost.devnet.internal
+const PUBLIC_URL = process.env.HOST_PUBLIC_URL // https://gh.example.com
 const HOST_DID = `did:web:${new URL(PUBLIC_URL).host}`
 const MANAGING_APP = `${HOST_DID}#group_host`
 // Every group space is made under this policy, so the PDS asks the host (checkUserAccess) who may
@@ -66,7 +68,7 @@ const META = `${NS}.meta`
 const MEMBERS = `${NS}.members`
 const spaceUri = (did, type, skey = 'self') => `at://${did}/space/${type}/${skey}`
 
-// ---- spike state (a real host keeps these in its own tables) ----
+// ---- the host's own state, in memory (a host in production would keep these in tables) ----
 const tickets = new Map() // id -> { groupDid, personDid, exp }
 const pending = new Map() // signin state -> { requestUri, clientId, mode, groupDid? }
 const consent = new Map() // requestUri -> what the host's consent page shows
@@ -388,7 +390,7 @@ async function recoveryKeyFirst(did, key) {
 // The creator gets a recovery key: a new keypair whose public half createAccount puts first
 // among the DID's rotation keys, ahead of the PDS's own. The private half is returned for the
 // creator to see once, and is never written down here, not in the state file, a log or the PDS.
-// The proposal is silent on recovery; this is the host's choice (spec 001 FR-001g, om-3r2nx.7).
+// The proposal is silent on recovery; this is the host's choice.
 async function createGroup({ label, creatorDid, afterAccount }) {
   const handle = `${label}${HANDLE_DOMAIN}`
   creates.set(handle, { handle, creatorDid, startedAt: new Date().toISOString() })
@@ -479,7 +481,7 @@ async function seedRecords(did, jwt, { label, creatorDid }) {
           `include:${NS}.moderate`,
           'space:*?action=read_self&manage=create&manage=delete',
           // Read and write in every group space, ones made later included, so a session the
-          // creator authorizes at create already covers the spaces an app adds next (TS, 2026-10-15).
+          // creator authorizes at create already covers the spaces an app adds next.
           'space:*?collection=*',
           // Labels in any group space, write only: with no action a space scope also reads.
           'space:*?collection=com.atproto.label.label&action=create&action=update&action=delete',
@@ -560,7 +562,7 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
 
 // Hints an app may put on the link it sends the browser to, to fill in the start page: gh_name,
 // the group's name as the person typed it in the app (a create only), and gh_person, the person's
-// DID. Our own addition (TS, 2026-10-17); the proposal is silent on it, and another host ignores
+// DID. This host's own addition; the proposal is silent on it, and another host ignores
 // them. A hint only fills in a field, which stays editable, and the checks on Continue are the same
 // as for anything typed. Nothing else reads a hint: the creator is whoever signs in at their own
 // PDS. A hint that does not work out (too long, malformed, unresolvable) leaves its field empty.
@@ -708,7 +710,7 @@ outer.get('/signin/callback', async (req, res, next) => {
     const p = pending.get(state?.s)
     pending.delete(state?.s)
     if (!p) return res.status(400).send('unknown sign-in')
-    // Who may create a group is the host's call; the spike lets anyone signed in.
+    // Who may create a group is the host's call; this one lets anyone signed in.
     if (p.mode !== 'create') return await toConsent(res, p, { did: p.groupDid }, personDid)
     let group
     try {
@@ -759,7 +761,7 @@ outer.get('/signin/created', async (req, res, next) => {
 })
 
 // Shown once, in the response to the sign-in that made the group. It says what the key does and
-// what it does not, as spec 001 FR-001i asks of the one-time key panel. `data-did` is the key's
+// what it does not. `data-did` is the key's
 // public half, which the group's PLC lists first among its rotation keys.
 function recoveryKeyPage(state, group, key) {
   return `<!doctype html><title>Save the recovery key for @${esc(group.handle)}</title>
@@ -1104,7 +1106,7 @@ outer.post(
 // The declaration comes down when the meta space stops being public: the lexicon has a group
 // publish it only while meta is public (declaration.json). Going public leaves it to the group's
 // app, since a public group may stay unlisted (proposal.md: groups that wish to be discoverable
-// may publish one; TS, 2026-10-17). It is done before the write's answer goes back, so an app that
+// may publish one). It is done before the write's answer goes back, so an app that
 // reads after its save sees the two in step.
 const DECLARATION = `${NS}.declaration`
 outer.post(SPACE_WRITES.map((n) => `/xrpc/com.atproto.space.${n}`), async (req, res, next) => {
@@ -1144,7 +1146,7 @@ async function followMetaAccess(group) {
 // Nobody reconfigures, wipes or migrates a group space, the group's own sessions included: a
 // space's policy follows its `access` record, and only the host changes it. Wiping
 // (clearRecords), pruning writers (removeWriter) and account migration are refused for now, so a
-// group cannot yet move to another host: a gap to close, not a decision (TS, 2026-10-30).
+// group cannot yet move to another host: a gap to close, not a decision.
 const SPACE_CHANGES = [
   'com.atproto.space.createSpace',
   'com.atproto.space.updateSpace',
@@ -1324,7 +1326,7 @@ memberMethod('cancelJoinRequest', async ({ group, member, call }) => {
 
 // leaveGroup (leaveGroup.json): the host deletes the caller's membership as the group. It is the
 // member's own act, so no `assignable` check, and it withdraws a pending request too. Leaving when
-// not a member changes nothing and succeeds. The last admin may leave (TS, 2026-10-14): the
+// not a member changes nothing and succeeds. The last admin may leave: the
 // proposal does not say otherwise, though a group whose remaining roles cannot assign `admin` can
 // then never get one back.
 memberMethod('leaveGroup', async ({ group, member, call }) => {
@@ -1404,7 +1406,7 @@ groupMethod('listJoinRequests', 'GET', async ({ group, input, call }) => {
 
 // denyJoinRequest (denyJoinRequest.json): the group comes from the session, the member from the
 // input. A denial is not remembered and the person may ask again at once: the lexicons define no
-// hold and no error for one, and the host does not depart from them (TS, 2026-10-14).
+// hold and no error for one, and the host does not depart from them.
 groupMethod('denyJoinRequest', 'POST', async ({ group, input: { member }, call }) => {
   if (typeof member !== 'string' || !member.startsWith('did:')) throw new Refusal(400, 'InvalidRequest', 'member must be a DID')
   await pendingFor(group)
