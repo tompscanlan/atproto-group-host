@@ -1,5 +1,5 @@
-spike/node_modules
-spike/data
-spike/shots
-*.log
-.git
+# The image holds the host and its dependency list, nothing else.
+*
+!package.json
+!package-lock.json
+!src/

@@ -1,13 +1,13 @@
-# The group host as an image, for a cluster: the pinned spaces-alpha PDS image (the host runs
-# @atproto/pds as a library, so it is exactly that build) with spike/host.mjs and its three
-# dependencies added. Build from the repo root:
-#   docker build -t <registry>/atproto-group-host:<git sha> .
-# Nothing is fetched when the container starts. devnet/compose.yaml mounts spike/ instead and does not use this.
+# The group host as an image: the pinned spaces alpha PDS image, with src/host.mjs and its three
+# dependencies added. The host runs @atproto/pds as a library, so the PDS is exactly that build.
+# Build from the repo root:
+#   docker build -t atproto-group-host .
+# Nothing is fetched when the container starts.
 FROM ghcr.io/bluesky-social/atproto@sha256:f003adf7ca7cbb8ff60a4d99323fd009dfc1259b208f468f71accf0366ecab1e
 USER root
-WORKDIR /spike
-COPY spike/package.json spike/package-lock.json ./
+WORKDIR /grouphost
+COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
-COPY spike/host.mjs ./
+COPY src/host.mjs ./
 ENTRYPOINT ["node"]
-CMD ["/spike/host.mjs"]
+CMD ["/grouphost/host.mjs"]

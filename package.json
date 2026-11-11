@@ -1,0 +1,14 @@
+{
+  "name": "atproto-group-host",
+  "private": true,
+  "description": "A group host for atproto groups: a PDS for group accounts, built on the spaces alpha PDS",
+  "type": "module",
+  "dependencies": {
+    "@atcute/crypto": "2.4.1",
+    "@atcute/identity-resolver": "1.2.2",
+    "@atcute/oauth-node-client": "1.1.0"
+  },
+  "devDependencies": {
+    "playwright": "1.64.1"
+  }
+}

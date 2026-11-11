@@ -1,4 +1,5 @@
 node_modules/
-spike/data/
 *.log
-spike/shots/
+# What the probes write: screenshots per run, and the snowglobe's lexicons copied in for a run.
+probes/shots/
+probes/lexicons/
