@@ -1472,11 +1472,13 @@ groupMethod(
 // ---- test routes, for the probes ----
 // They show the host's state and set up test cases, and two of them write as the group. Each takes
 // the PDS's admin login, as its own admin routes do: Basic auth, user `admin`, the admin password.
-const adminLogin = Buffer.from(`admin:${secrets.adminPassword}`)
+// Their digests are compared, so the comparison takes the same time whatever the login's length.
+const digest = (bytes) => crypto.createHash('sha256').update(bytes).digest()
+const adminLogin = digest(Buffer.from(`admin:${secrets.adminPassword}`))
 const adminOnly = (req, res, next) => {
   const [kind, value] = (req.headers.authorization ?? '').split(' ')
-  const given = kind === 'Basic' && value ? Buffer.from(value, 'base64') : Buffer.alloc(0)
-  if (given.length === adminLogin.length && crypto.timingSafeEqual(given, adminLogin)) return next()
+  const given = digest(kind === 'Basic' && value ? Buffer.from(value, 'base64') : Buffer.alloc(0))
+  if (crypto.timingSafeEqual(given, adminLogin)) return next()
   res.status(401).json({ error: 'AuthRequired', message: 'the test routes take the admin login' })
 }
 outer.use('/test', adminOnly, express.json())
