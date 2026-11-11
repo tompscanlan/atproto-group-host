@@ -1,6 +1,7 @@
 // lib.mjs: what the probes share. They run on a snowglobe made from probes/snowglobe.yml, under
 // `snowglobe run --app probes`, which hands them the settings below and makes Node trust the
 // snowglobe's certificate. Passwords and tokens are never printed.
+import { execFileSync } from 'node:child_process'
 import crypto from 'node:crypto'
 import dns from 'node:dns'
 import http from 'node:http'
@@ -83,9 +84,16 @@ export const wellKnownDid = (handle) =>
       .on('error', (e) => resolve({ status: 0, body: e.code ?? e.message }))
   })
 
-export const state = async (q) => (await fetch(`${HOST}/spike/state?${new URLSearchParams(q)}`)).json()
-export const spike = async (p, body) =>
-  (await fetch(`${HOST}/spike/${p}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).json()
+// The host's test routes take the PDS's admin login. The probes read the password from the host's
+// container, where the snowglobe set it, and never print it.
+let adminLogin
+const admin = () => {
+  adminLogin ??= execFileSync('docker', ['exec', HOST_CONTAINER, 'printenv', 'PDS_ADMIN_PASSWORD'], { encoding: 'utf8' }).trim()
+  return `Basic ${Buffer.from(`admin:${adminLogin}`).toString('base64')}`
+}
+export const state = async (q) => (await fetch(`${HOST}/test/state?${new URLSearchParams(q)}`, { headers: { authorization: admin() } })).json()
+export const testRoute = async (p, body) =>
+  (await fetch(`${HOST}/test/${p}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: admin() }, body: JSON.stringify(body) })).json()
 
 const redact = (v) => JSON.stringify(v)?.replace(/("(?:token|accessJwt|refreshJwt|credential)"\s*:\s*")[^"]+"/g, '$1<redacted>"')
 const parse = (text) => {

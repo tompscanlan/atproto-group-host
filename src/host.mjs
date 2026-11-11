@@ -23,7 +23,7 @@
 //       group session holding the method's rpc: scope, and createSpace takes one holding
 //       manage=create for the space's type.
 //
-// Spike-only routes under /spike/* show the host's state and set up test cases.
+// Test routes under /test/*, behind the PDS's admin login, show the host's state and set up test cases.
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
@@ -383,7 +383,7 @@ async function recoveryKeyFirst(did, key) {
 
 // A create that fails once its account exists removes the account, so the address is free again
 // and no group is left without an admin. `afterAccount` is the probes' way to cut it short there
-// (/spike/interrupted-create).
+// (/test/interrupted-create).
 //
 // The creator gets a recovery key: a new keypair whose public half createAccount puts first
 // among the DID's rotation keys, ahead of the PDS's own. The private half is returned for the
@@ -1467,9 +1467,18 @@ groupMethod(
   groupSession,
 )
 
-// ---- spike-only routes (no auth: devnet only, bound behind the devnet's nginx) ----
-outer.use('/spike', express.json())
-outer.get('/spike/state', async (req, res) => {
+// ---- test routes, for the probes ----
+// They show the host's state and set up test cases, and two of them write as the group. Each takes
+// the PDS's admin login, as its own admin routes do: Basic auth, user `admin`, the admin password.
+const adminLogin = Buffer.from(`admin:${secrets.adminPassword}`)
+const adminOnly = (req, res, next) => {
+  const [kind, value] = (req.headers.authorization ?? '').split(' ')
+  const given = kind === 'Basic' && value ? Buffer.from(value, 'base64') : Buffer.alloc(0)
+  if (given.length === adminLogin.length && crypto.timingSafeEqual(given, adminLogin)) return next()
+  res.status(401).json({ error: 'AuthRequired', message: 'the test routes take the admin login' })
+}
+outer.use('/test', adminOnly, express.json())
+outer.get('/test/state', async (req, res) => {
   const group = req.query.group
   const deviceAccounts = group ? (await store.listDeviceAccounts({ did: group })).length : null
   const grants = group && req.query.person ? await grantsFor(group, req.query.person) : null
@@ -1489,7 +1498,7 @@ outer.get('/spike/state', async (req, res) => {
   })
 })
 // A space of the group with no access record, for testing the undeclared-space refusal.
-outer.post('/spike/bare-space', async (req, res, next) => {
+outer.post('/test/bare-space', async (req, res, next) => {
   try {
     const { group, skey } = req.body
     await xrpc('com.atproto.space.createSpace', { spaceType: META, skey, policy: MA }, await groupJwt(group))
@@ -1502,7 +1511,7 @@ outer.post('/spike/bare-space', async (req, res, next) => {
 // Records written as the group itself, which holds every permission (proposal.md:44). A probe's
 // setup for a role made after the group needs it: that role is in nobody's `assignable` list, so
 // no person may grant it anything.
-outer.post('/spike/as-group', async (req, res, next) => {
+outer.post('/test/as-group', async (req, res, next) => {
   try {
     const { group, space, writes } = req.body
     res.json(await xrpc('com.atproto.space.applyWrites', { space, repo: group, writes }, await groupJwt(group)))
@@ -1513,7 +1522,7 @@ outer.post('/spike/as-group', async (req, res, next) => {
 
 // A create cut short once its account exists. `fail` throws there, so the create's own clean-up
 // runs; `hang` never goes on, so the create is cut by restarting the host, as a crash would cut it.
-outer.post('/spike/interrupted-create', async (req, res, next) => {
+outer.post('/test/interrupted-create', async (req, res, next) => {
   try {
     const { label, creatorDid, how } = req.body
     if (how === 'fail') {

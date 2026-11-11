@@ -13,7 +13,7 @@
 // Restarts the host's container once, so run it where docker reaches the snowglobe's.
 // Run from probes/: snowglobe run node in-step.mjs
 import { execFileSync } from 'node:child_process'
-import { GROUP_DOMAIN, HOST, HOST_CONTAINER, META, MEMBERS, alice, as, call, groupSignIn, log, now, sleep, spaceUri, spike, state, summary, verdict } from './lib.mjs'
+import { GROUP_DOMAIN, HOST, HOST_CONTAINER, META, MEMBERS, alice, as, call, groupSignIn, log, now, sleep, spaceUri, testRoute, state, summary, verdict } from './lib.mjs'
 
 const NS = 'group.opensocial'
 const DECLARATION = `${NS}.declaration`
@@ -77,8 +77,8 @@ verdict(
 // ---------- k4 ----------
 log('\n## k4 a create that fails once its account exists\n')
 const failed = `kf${Date.now().toString(36)}`
-const f4 = await spike('interrupted-create', { label: failed, creatorDid: alice.did, how: 'fail' })
-log(`- ${now()} /spike/interrupted-create fail -> ${JSON.stringify(f4)}`)
+const f4 = await testRoute('interrupted-create', { label: failed, creatorDid: alice.did, how: 'fail' })
+log(`- ${now()} /test/interrupted-create fail -> ${JSON.stringify(f4)}`)
 const h4 = await resolve(failed)
 const x4 = f4.did ? await describe(f4.did) : null
 const n4 = await noted(failed)
@@ -91,8 +91,8 @@ verdict(
 // ---------- k5 ----------
 log('\n## k5 a create cut by the host stopping\n')
 const hung = `kh${Date.now().toString(36)}`
-const f5 = await spike('interrupted-create', { label: hung, creatorDid: alice.did, how: 'hang' })
-log(`- ${now()} /spike/interrupted-create hang -> ${JSON.stringify(f5)}`)
+const f5 = await testRoute('interrupted-create', { label: hung, creatorDid: alice.did, how: 'hang' })
+log(`- ${now()} /test/interrupted-create hang -> ${JSON.stringify(f5)}`)
 const before = await resolve(hung)
 const notedBefore = await noted(hung)
 log(`- ${now()} docker restart ${HOST_CONTAINER}`)

@@ -8,7 +8,7 @@
 //   h5  one refused write in a batch leaves the whole batch unwritten
 //   h6  createSpace grants only what the caller holds, to roles it may assign
 // Run from probes/: snowglobe run node grants.mjs
-import { META, MEMBERS, alice, bob, as, groupSignIn, listRecords, log, spaceUri, spike, state, summary, verdict } from './lib.mjs'
+import { META, MEMBERS, alice, bob, as, groupSignIn, listRecords, log, spaceUri, testRoute, state, summary, verdict } from './lib.mjs'
 
 const NS = 'group.opensocial'
 const SETS = ['configure', 'manageSpaces', 'manageMembers', 'moderate'].map((s) => `include:${NS}.${s}`)
@@ -47,7 +47,7 @@ verdict('h1', SETS.every((s) => A.kept.includes(s)), `kept ${SETS.filter((s) => 
 // The group itself adds the role and its grants: a role made after the group is in nobody's
 // `assignable` list, so no person may grant it anything.
 const writes = (list) => list.map(([verb, collection, rkey, record]) => ({ $type: `com.atproto.space.applyWrites#${verb}`, collection, rkey, value: { $type: collection, ...record } }))
-const asGroup = (space, list) => spike('as-group', { group: G, space, writes: writes(list) })
+const asGroup = (space, list) => testRoute('as-group', { group: G, space, writes: writes(list) })
 const PERMISSIONS = [
   { role: 'admin', scopes: [...SETS, 'space:*?action=read_self&manage=create&manage=delete', 'space:*?collection=*', 'repo:*', 'blob:*/*'], assignable: ['admin', 'member', 'moderator'] },
   { role: 'member', scopes: [], assignable: [] },

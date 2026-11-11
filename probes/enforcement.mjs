@@ -9,7 +9,7 @@
 //   e8  the group writes only in spaces that have an `access` record
 // Run from probes/: snowglobe run node enforcement.mjs
 import {
-  HOST, META, MEMBERS, alice, bob, as, asOwn, credentialFor, groupSignIn, listRecords, listWriters, log, ownSession, sleep, spaceUri, spike, state, summary, verdict,
+  HOST, META, MEMBERS, alice, bob, as, asOwn, credentialFor, groupSignIn, listRecords, listWriters, log, ownSession, sleep, spaceUri, testRoute, state, summary, verdict,
 } from './lib.mjs'
 
 const NS = 'group.opensocial'
@@ -52,7 +52,7 @@ const del = (s, who, space, collection, rkey) => as(s, who, 'POST', 'com.atproto
 // The group itself adds the role and its grants: a role made after the group is in nobody's
 // `assignable` list, so no person may grant it anything.
 const writes = (list) => list.map(([verb, collection, rkey, record]) => ({ $type: `com.atproto.space.applyWrites#${verb}`, collection, rkey, value: { $type: collection, ...record } }))
-const asGroup = (space, list) => spike('as-group', { group: G, space, writes: writes(list) })
+const asGroup = (space, list) => testRoute('as-group', { group: G, space, writes: writes(list) })
 const setup = [
   await asGroup(MEM, [
     ['create', `${NS}.role`, 'moderator', { displayName: 'Moderator' }],
@@ -220,8 +220,8 @@ verdict('e7', ss.every(([, r]) => refusedAs(r, 403, 'Forbidden', 'only through t
 
 // ---------- e8 ----------
 log('\n## e8 the group writes only in declared spaces\n')
-const bare = await spike('bare-space', { group: G, skey: 'bare' })
-const label8 = (space) => create(A.session, 'alice for the group', space, 'com.atproto.label.label', undefined, { uri: `at://${G}`, val: 'spike', createdAt: ts() })
+const bare = await testRoute('bare-space', { group: G, skey: 'bare' })
+const label8 = (space) => create(A.session, 'alice for the group', space, 'com.atproto.label.label', undefined, { uri: `at://${G}`, val: 'test', createdAt: ts() })
 const inBare = await label8(bare.space)
 const inMeta = await label8(MET)
 verdict('e8', refusedAs(inBare, 400, 'InvalidRequest', 'has no access record') && inMeta.status === 200, `a label (a grant across all spaces) into a space with no access record ${said(inBare)}; into meta ${inMeta.status}`)
