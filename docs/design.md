@@ -70,8 +70,9 @@ The creator then signs in at their own PDS. The host is an OAuth client there, a
 that is not built on the stock PDS could create the account with none.
 
 The `admin` role's group session grants are the proposal's four permission sets, as the proposal's
-example record grants them, plus read and write in every group space (spaces made later included),
-labels in any group space, `repo:*` and `blob:*/*` (so an admin's group session can write the
+example record grants them, plus creating and deleting group spaces
+(`space:*?action=read_self&manage=create&manage=delete`), read and write in every group space
+(spaces made later included), labels in any group space, `repo:*` and `blob:*/*` (so an admin's group session can write the
 group's public repo and upload images), and the `rpc:` scopes for `listJoinRequests` and
 `denyJoinRequest`. `member` holds no scopes for a group session.
 
@@ -88,6 +89,15 @@ PDS:
 5. The host's own consent page names the group, the person, their roles, the scopes kept and the
    scopes not offered.
 
+Here is that page for a plain member, from a probe run. The app asked for read and write in both
+starting spaces and for creating spaces; the member's role grants only the reads:
+
+![The host's consent page for a member: three scopes offered, three not offered](images/consent-member.png)
+
+The creator, right after making the group, is offered everything the app asked for
+([screenshot](images/consent-creator.png)). The page still shows raw scope strings and the app's
+client id as given.
+
 The ticket sign-in uses `remember: false`. The provider then returns a token good only for this
 one request, so no browser stays signed in as the group, and a later request cannot skip the role
 check.
@@ -101,8 +111,9 @@ then the token to the code's person, and carries it through refresh. The table i
 it survives a restart. A token with no person is cut to `atproto`.
 
 On every request, the PDS loads the token's scope from its store, and the host cuts it there to what
-the person's roles grant now. Removing a member, or taking a role away, closes their open session on
-its next request.
+the person's roles grant now. Removing a member, or taking a role away, takes the matching scopes
+away from their open session on its next request: a removed member's session is cut to `atproto`,
+so its reads and writes for the group are refused, though the token itself stays valid.
 
 Two records grant a role things, and they are easy to mix up:
 

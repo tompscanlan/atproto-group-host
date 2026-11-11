@@ -30,8 +30,8 @@ Early and experimental. It runs on test networks, not on the public atproto netw
 - **Lets people act for a group without its password.** The person signs in at their own PDS; the
   host checks their role and signs the app in as the group.
 - **Cuts every session to the person's roles.** The host offers only the scopes a person's roles
-  grant, and on every request cuts the session to what they grant now. Removing a member closes their
-  session on its next request.
+  grant, and on every request cuts the session to what they grant now. Removing a member takes the
+  group away from their open session on its next request.
 - **Enforces from the group's records.** It answers the PDS's access checks for group spaces from
   each space's `access` record, and checks every group write against the record rules and the
   writer's `assignable` roles. Nobody grants more than they hold.
@@ -55,19 +55,26 @@ It takes a PDS's usual `PDS_*` settings, and three of its own:
 
 | Setting | What it is |
 | --- | --- |
-| `HOST_PUBLIC_URL` | The host's https address. Its `did:web`, and the OAuth issuer, come from it. |
+| `HOST_PUBLIC_URL` | The host's https address. Its `did:web` comes from it, and so do its sign-in client's id and callback. |
 | `HOST_LOOPBACK_URL` | How the host calls its own PDS: `http://127.0.0.1:<PDS_PORT>`. |
 | `HOST_PLC_URL` | The PLC directory the host resolves people's DIDs from when it signs them in. |
 
-Of the PDS settings, these matter most here:
+Of the PDS settings:
 
-- `PDS_HOSTNAME`: the host's name, the same as in `HOST_PUBLIC_URL`.
+- The ones every PDS needs: `PDS_HOSTNAME` (the host's name, the same as in `HOST_PUBLIC_URL`; the
+  OAuth issuer comes from it), `PDS_PORT`, `PDS_JWT_SECRET`, `PDS_ADMIN_PASSWORD`,
+  `PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX` and `PDS_DID_PLC_URL`.
+- `PDS_DATA_DIRECTORY=/data` and `PDS_BLOBSTORE_DISK_LOCATION=/data/blocks`, with a volume at
+  `/data`. The host keeps its own state in `/data/grouphost-state.json`, whatever the data
+  directory is set to.
 - `PDS_SERVICE_HANDLE_DOMAINS`: the groups' handle ending, such as `.<the host's name>`.
-- `PDS_DATA_DIRECTORY`: `/data`. The host keeps its own state file there too, so mount a volume
-  there.
 - `PDS_LEXICON_AUTHORITY_DID`: an authority that publishes the `group.opensocial.*` lexicons. The
   host checks every scope a group's records name against the lexicons its PDS resolves.
 - `PDS_INVITE_REQUIRED=false`: the host makes its groups' accounts itself.
+
+The PDS inside the host resolves the host's own `did:web` over https to find where to call
+`checkUserAccess`, so the host must reach its own public name. snowglobe's group host service, in
+its `lib/render.mjs`, is a complete working set of settings.
 
 Health is `GET /xrpc/_health`, as on any PDS.
 
@@ -107,15 +114,17 @@ You need Node 20 or later (tested on 22), Docker, and the snowglobe command (`np
 
    ```bash
    npm ci
-   npx playwright install chromium
+   npx playwright install chromium   # on a fresh Linux machine: npx playwright install --with-deps chromium
    ```
 
-2. Copy the opensocial lexicons into `probes/lexicons/` (git ignores it). The snowglobe publishes
-   them, and the host checks scopes against them:
+2. Copy the opensocial lexicons, at the commit the host was tested with, into
+   `probes/lexicons/group/` (git ignores it). The snowglobe publishes them, and the host checks
+   scopes against them:
 
    ```bash
    git clone https://tangled.org/opensocial.group/proposal ../opensocial-proposal
-   mkdir -p probes/lexicons && cp -r ../opensocial-proposal/lexicons/group probes/lexicons/
+   git -C ../opensocial-proposal checkout 2b41a9b
+   cp -r ../opensocial-proposal/lexicons/group probes/lexicons/
    ```
 
 3. Bring the snowglobe up from `probes/`. It runs a spaces alpha PDS with two test people, alice
