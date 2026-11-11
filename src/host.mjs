@@ -83,7 +83,7 @@ const refusals = [] // every write, space change or group sign-in the host refus
 // mapped token into an unmapped one (an unmapped token is cut to "atproto").
 const saved = fs.existsSync(STATE_FILE) ? JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) : {}
 const tokenPerson = new Map(Object.entries(saved.tokenPerson ?? {})) // tokenId -> { groupDid, personDid|null, via }
-// Pending join requests are the host's own state, not records (proposal.md:222-226).
+// Pending join requests are the host's own state, not records (proposal.md).
 const joinRequests = new Map(Object.entries(saved.joinRequests ?? {})) // `${group} ${member}` -> { group, member, createdAt, message? }
 // Creates under way: noted before the account is made and dropped once the creator's membership
 // is written, so a create the process did not live to finish is found at the next start.
@@ -256,7 +256,7 @@ async function narrowRequested(scope, grants, groupDid) {
   return { kept, dropped }
 }
 
-// ---- (d) tie each token to the person who authorized it ----
+// ---- (d, continued) tie each token to the person who authorized it ----
 const reqId = (requestUri) => requestUri.replace(/^urn:ietf:params:oauth:request_uri:/, '')
 
 // The provider hands one hooks object to all its managers, so wrapping a hook here is seen by
@@ -906,7 +906,7 @@ const parseSpace = (uri) => {
 
 // Whether a person may read a group space (and so be tracked as a writer in it): the space's
 // `access` record is public, or one of their roles is granted `read` there. Only `access` grants
-// count here; `permissions` grants are about the group session's own scopes (proposal.md:52-53).
+// count here; `permissions` grants are about the group session's own scopes (proposal.md).
 async function decideAccess(spaceUri, user, kind) {
   const { authority } = parseSpace(spaceUri)
   if (user === authority) return { authorized: true, why: 'the group itself' }
@@ -969,7 +969,7 @@ async function beyondOwn(groupDid, mine, before, after, space) {
   return null
 }
 
-// The checks a group write must pass before the PDS takes it (proposal.md:46, :67; the record
+// The checks a group write must pass before the PDS takes it (proposal.md; the record
 // lexicons). `ops` is one write, or every write of an applyWrites, checked in order against the
 // state the earlier ones leave. Returns a refusal, or null.
 async function checkGroupWrites(groupDid, space, ops, caller) {
@@ -980,7 +980,7 @@ async function checkGroupWrites(groupDid, space, ops, caller) {
   if (!g.access.some((a) => a.space.uri === space)) return invalid(`${space} has no access record, so the group does not write in it`)
   const roles = new Set(g.roles.map((r) => r.rkey))
   const memberships = new Map(g.memberships.map((r) => [r.rkey, r.value]))
-  // The group DID itself holds every permission (proposal.md:44); a person holds their roles'.
+  // The group DID itself holds every permission (proposal.md); a person holds their roles'.
   const mine = caller.personDid ? await grantsFor(groupDid, caller.personDid) : null
   const assignable = mine && new Set(mine.assignable)
   const grantsNow = new Map([
@@ -1189,7 +1189,7 @@ outer.get(
   spaceGuard((req, caller) => (req.query.space ? parseSpace(String(req.query.space)).authority : caller.sub)),
 )
 
-// The managing app's answer, now from the records.
+// ---- (c) checkUserAccess: the managing app's answer, from the records ----
 outer.get('/xrpc/com.atproto.managedspace.checkUserAccess', async (req, res) => {
   const { space, user, access: kind, clientId } = req.query
   let iss = null
@@ -1227,7 +1227,7 @@ const sendError = (res, err) =>
   : null
 
 // Joining, cancelling and leaving are the person's acts, not the group's, so they carry service
-// auth from the person's own account (proposal.md:102). The audience is the group: an app calls
+// auth from the person's own account (proposal.md). The audience is the group: an app calls
 // its own PDS with `atproto-proxy: <group>#atproto_pds`, and that PDS mints the token with the
 // group's bare DID as `aud` (pds pipethrough.js, "Phase 1 of service auth updates"; it says a
 // later phase may send `<group>#atproto_pds`, so that is taken too). A token made for one group
@@ -1283,7 +1283,7 @@ memberMethod('requestJoin', async ({ group, member, body: { invite, message }, c
   const g = await readGroup(group)
   const existing = g.memberships.find((m) => m.rkey === member)
   if (existing) {
-    // Approved by a membership write (proposal.md:222), or already in: no request left pending.
+    // Approved by a membership write (proposal.md), or already in: no request left pending.
     dropRequest(group, member)
     call.result = 'already a member'
     return { status: 'admitted', membership: { uri: existing.uri, cid: existing.cid } }
@@ -1345,9 +1345,9 @@ memberMethod('leaveGroup', async ({ group, member, call }) => {
 // ---- (h) the group's own methods, with a group session ----
 
 // Nothing behind these routes checks the token, so the host runs the PDS's own check. A password
-// session is the group itself and holds every permission (proposal.md:44). An OAuth token needs a
+// session is the group itself and holds every permission (proposal.md). An OAuth token needs a
 // valid DPoP proof and, after the per-request cut to its person's current roles (loadTokenClaims
-// above), the method's rpc: scope (proposal.md:222-223). That scope is checked against the host's
+// above), the method's rpc: scope (proposal.md). That scope is checked against the host's
 // own service, `#group_host` in its DID document; the proposal's grants say `aud=*`.
 const groupAuth = pds.ctx.authVerifier.authorization({ authorize: (permissions, { params }) => permissions.assertRpc(params) })
 // For a method whose check needs the input (createSpace), the handler asserts it, as the PDS's
@@ -1376,7 +1376,7 @@ function groupMethod(name, verb, handler, auth = groupAuth) {
   })
 }
 
-// A request whose member now holds a membership was approved by that write (proposal.md:222):
+// A request whose member now holds a membership was approved by that write (proposal.md):
 // it is no longer pending, so it is dropped before the group sees the list.
 async function pendingFor(group) {
   const g = await readGroup(group)
@@ -1416,7 +1416,7 @@ groupMethod('denyJoinRequest', 'POST', async ({ group, input: { member }, call }
 })
 
 // createSpace (createSpace.json): manage=create for the space, checked the way the PDS's own
-// space.createSpace checks it (proposal.md:214-221). The host makes the space under the
+// space.createSpace checks it (proposal.md). The host makes the space under the
 // managedspace policy, so the PDS asks the host who may use it, then writes its `access` record
 // and, unless `index` is false, an index entry in members. The host's own writes skip the write
 // gate, so the grants are checked here first and a refused request leaves nothing behind. Errors
@@ -1512,7 +1512,7 @@ outer.post('/test/bare-space', async (req, res, next) => {
   }
 })
 
-// Records written as the group itself, which holds every permission (proposal.md:44). A probe's
+// Records written as the group itself, which holds every permission (proposal.md). A probe's
 // setup for a role made after the group needs it: that role is in nobody's `assignable` list, so
 // no person may grant it anything.
 outer.post('/test/as-group', async (req, res, next) => {
@@ -1563,7 +1563,7 @@ outer.use((err, req, res, next) => {
 // PDS's own app does the listening, and the server it makes hands every request to outer, in the
 // same tick and before any request can arrive. Listening with outer instead drops the upgrade
 // handler: a relay's subscribeRepos then falls through as a plain GET and gets AuthMissing.
-// probe-subscribe-repos.mjs checks this end to end; rerun it on every PDS image update.
+// probes/subscribe-repos.mjs checks this end to end; rerun it on every PDS image update.
 const listenWithUpgrades = pds.app.listen
 pds.app.listen = (...args) => {
   const server = listenWithUpgrades(...args)
