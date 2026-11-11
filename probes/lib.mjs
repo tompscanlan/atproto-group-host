@@ -7,6 +7,7 @@ import dns from 'node:dns'
 import http from 'node:http'
 import https from 'node:https'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
 import { OAuthClient, MemoryStore } from '@atcute/oauth-node-client'
 import {
@@ -22,7 +23,7 @@ const setting = (name) => {
   return v
 }
 
-export const HERE = path.dirname(new URL(import.meta.url).pathname)
+export const HERE = path.dirname(fileURLToPath(import.meta.url))
 // A run's screenshots go in a folder of their own, so no run writes over another's.
 const SHOTS = path.join(HERE, 'shots', `${new Date().toISOString().replace(/[:.]/g, '-')}-${path.basename(process.argv[1] ?? 'run', '.mjs')}`)
 // The host under test, and the spaces PDS the test people's own accounts are on.
