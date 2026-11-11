@@ -1,11 +1,11 @@
-// probe-signup.mjs: the host's sign-up page (prompt=create) on the https devnet.
+// signup-page.mjs: the host's sign-up page (prompt=create).
 //   u1  an address the PDS would refuse, and a handle that leads nowhere, are turned down on the
 //       host's own page with their reason, before the person goes to their own PDS
 //   u2  after those refusals the same sign-in still makes the group: a refusal does not spend it
 //   u3  the page asks only for the group's address, and the starting profile is named after it
 //   u4  the host's request log prints request headers, and never the host's internal mark
-// Run: ../../atproto-devnet/scripts/https-run node probe-signup.mjs 2>&1 | tee run-signup.log
-// Logins live in data/accounts.env (mode 600) and are never printed; tokens are never printed.
+// Run from probes/: snowglobe run node signup-page.mjs
+// Passwords and tokens are never printed.
 import { spawnSync } from 'node:child_process'
 import { DOMAIN as SG_DOMAIN, GROUP_DOMAIN as DOMAIN, HOST, HOST_CONTAINER, META, alice, groupSignIn, listRecords, log, summary, verdict } from './lib.mjs'
 
@@ -39,7 +39,7 @@ verdict(
   'u1',
   taken !== null && A.refused.length === REFUSED.length && wrong.length === 0,
   `${A.refused.length} of ${REFUSED.length} turned down on the host's page with the expected reason` +
-    (taken ? '' : '; the host holds no group to test a taken address against (run probe-day2 first)') +
+    (taken ? '' : '; the host holds no group to test a taken address against (run sessions.mjs first)') +
     (wrong.length ? `; wrong: ${JSON.stringify(wrong)}` : ''),
 )
 

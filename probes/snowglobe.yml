@@ -1,0 +1,50 @@
+# The snowglobe the probes run on: a spaces PDS for the two test people, the group host built
+# from this checkout, and the opensocial lexicons. See the README's "Testing" section. From this
+# folder:
+#
+#   snowglobe up                      # start it, or rebuild the host from the checkout
+#   snowglobe run node sessions.mjs   # one probe
+#   snowglobe down -v                 # stop it and drop its data
+globe: ghprobes
+
+pds:
+  # The same spaces alpha build the host runs on.
+  - name: alpha
+    image: ghcr.io/bluesky-social/atproto@sha256:f003adf7ca7cbb8ff60a4d99323fd009dfc1259b208f468f71accf0366ecab1e
+    bare_handles: true
+
+grouphosts:
+  - name: gh
+    kind: opensocial
+    build: ..
+
+services:
+  jetstream: false
+  slingshot: false
+  pdsls: false
+
+# The host checks every scope a group's records name against the lexicons its PDS resolves. Copy
+# the proposal's group/ folder here first (probes/lexicons/group/opensocial/*.json); test/ holds a
+# space type the probes use.
+lexicons:
+  authority: alpha
+  publish: lexicons
+
+accounts:
+  - alice@alpha
+  - bob@alpha
+
+apps:
+  - name: probes
+    env:
+      GROUP_HOST_URL: ${grouphosts.gh.url}
+      ALPHA_URL: ${pds.alpha.url}
+      PLC_URL: ${services.plc.url}
+      SNOWGLOBE_DOMAIN: ${domain}
+      HOST_CONTAINER: ${globe}-grouphost-gh-1
+      ALICE_HANDLE: ${accounts.alice.handle}
+      ALICE_PASSWORD: ${accounts.alice.password}
+      ALICE_DID: ${accounts.alice.did}
+      BOB_HANDLE: ${accounts.bob.handle}
+      BOB_PASSWORD: ${accounts.bob.password}
+      BOB_DID: ${accounts.bob.did}

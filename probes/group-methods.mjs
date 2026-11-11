@@ -1,4 +1,5 @@
-// probe-day4.mjs: a person's own acts on a group, with service auth from their own PDS.
+// group-methods.mjs: the group methods. A person's own acts on a group come with service auth from
+// their own PDS; the group's own acts on its join requests and spaces take a group session.
 //   f1  requestJoin through the person's own PDS reaches the host with the group as the token's
 //       audience, and an approval group keeps one pending request however often they ask
 //   f2  the host checks that service auth: none, a group session, the host as audience, another
@@ -31,9 +32,7 @@
 //       a bare space type with no published lexicon)
 //   f16 who may call it: no auth is refused, and bob's session from f11, offered manage=create
 //       as admin, is refused now that he is a member
-// Run from spike/ (Chromium needs the devnet's leaf certificate):
-//   SG_LEAF_FILE=/workspaces/scratch/atproto-devnet/data/https/leaf.crt \
-//     /workspaces/scratch/atproto-devnet/scripts/https-run node probe-day4.mjs > run-day4.log 2>&1
+// Run from probes/: snowglobe run node group-methods.mjs
 import {
   HOST, META, MEMBERS, alice, bob, as, asOwn, call, credentialFor, groupSignIn, listRecords, log, ownSession, spaceUri, state, summary, verdict,
 } from './lib.mjs'
@@ -54,10 +53,9 @@ const SCOPES = [
   `rpc:${DENY}?aud=*`,
   MANAGE,
 ]
-// A space type of no app's, with no lexicon published on the devnet: its grants name collections,
+// A space type of no app's, with no lexicon published: its grants name collections,
 // since a bare space type expands only through its lexicon.
 const TYPE = 'test.grouphost.board'
-const DAY3_GROUP = 'did:plc:5wwtfd2cqt2zvecrmctsla4v' // another group on this host, from day 3
 const NOT_HOSTED = 'did:plc:nosuchgroupnosuchgroup23'
 const HOST_DID = `did:web:${new URL(HOST).host}`
 const ts = () => new Date().toISOString()
@@ -72,6 +70,15 @@ if (!A.ok) {
   process.exit(0)
 }
 const G = A.session.did
+// A second group of alice's on this host, also by approval: a request there must stay out of this
+// group's list, and a token made for it must not work here.
+const O = await groupSignIn(alice, { create: { label: `${label}o` }, scopes: ['atproto'] })
+if (!O.ok) {
+  verdict('setup', false, 'the second group was not made')
+  summary()
+  process.exit(0)
+}
+const OTHER = O.session.did
 const MEM = spaceUri(G, MEMBERS)
 const MET = spaceUri(G, META)
 const asA = (method, nsid, body) => as(A.session, 'alice for the group', method, nsid, { body })
@@ -113,7 +120,7 @@ log('\n## f2 the host checks the service auth\n')
 const none = await direct('none', null, { group: G })
 const groupSession = await as(A.session, 'alice for the group', 'POST', JOIN, { body: { group: G } })
 const hostAud = await direct('bob service auth, aud = the host', await serviceAuth(HOST_DID, JOIN), { group: G })
-const otherAud = await direct('bob service auth, aud = another group on this host', await serviceAuth(DAY3_GROUP, JOIN), { group: G })
+const otherAud = await direct('bob service auth, aud = another group on this host', await serviceAuth(OTHER, JOIN), { group: G })
 const otherLxm = await direct('bob service auth for leaveGroup', await serviceAuth(G, `${NS}.leaveGroup`), { group: G })
 const good = await serviceAuth(G, JOIN)
 const direct1 = await direct('bob service auth, aud = the group', good, { group: G })
@@ -218,7 +225,7 @@ verdict(
 log('\n## f8 listJoinRequests with a group session\n')
 const list = (s, who, params) => as(s, who, 'GET', LIST, { params })
 const r8 = await join({ group: G, message: 'please let me in' })
-const r8other = await join({ group: DAY3_GROUP })
+const r8other = await join({ group: OTHER })
 const l8 = await list(A.session, 'alice for the group')
 const page1 = await list(A.session, 'alice for the group', { limit: '1' })
 const page2 = page1.body?.cursor ? await list(A.session, 'alice for the group', { limit: '1', cursor: page1.body.cursor }) : null
@@ -233,7 +240,7 @@ verdict(
     l8.status === 200 && reqs8.length === 1 && reqs8[0].member === bob.did && reqs8[0].message === 'please let me in' &&
     page1.body?.requests?.length === 1 && !!page1.body?.cursor && page2?.status === 200 && page2.body?.requests?.length === 0 && !page2.body?.cursor &&
     l8none.status === 401 && l8svc.status >= 400,
-  `alice was offered ${JSON.stringify(aliceRpc)}; bob asked here ${err(r8)} and at day 3's group ${err(r8other)}; alice's list ${l8.status}: ${JSON.stringify(reqs8.map((r) => ({ member: r.member === bob.did ? 'bob' : r.member, message: r.message })))}; limit 1 gave ${page1.body?.requests?.length} and a cursor, the next page ${page2?.body?.requests?.length} and ${page2?.body?.cursor ? 'a' : 'no'} cursor; no auth ${l8none.status} ${l8none.body?.error ?? ''}; bob's service auth as the session ${l8svc.status} ${l8svc.body?.error ?? ''}`,
+  `alice was offered ${JSON.stringify(aliceRpc)}; bob asked here ${err(r8)} and at the other group ${err(r8other)}; alice's list ${l8.status}: ${JSON.stringify(reqs8.map((r) => ({ member: r.member === bob.did ? 'bob' : r.member, message: r.message })))}; limit 1 gave ${page1.body?.requests?.length} and a cursor, the next page ${page2?.body?.requests?.length} and ${page2?.body?.cursor ? 'a' : 'no'} cursor; no auth ${l8none.status} ${l8none.body?.error ?? ''}; bob's service auth as the session ${l8svc.status} ${l8svc.body?.error ?? ''}`,
 )
 
 // ---------- f9 ----------
@@ -265,13 +272,13 @@ const l10 = await list(A.session, 'alice for the group')
 const d10again = await deny(bob.did)
 const d10never = await deny(NOT_HOSTED)
 const r10again = await join()
-const tidy = [await viaOwn(CANCEL), await viaOwn(CANCEL, { group: DAY3_GROUP })]
+const tidy = [await viaOwn(CANCEL), await viaOwn(CANCEL, { group: OTHER })]
 verdict(
   'f10',
   r10.body?.status === 'pending' && d10.status === 200 && (l10.body?.requests ?? []).length === 0 &&
     d10again.status === 400 && d10again.body?.error === 'JoinRequestNotFound' && d10never.status === 400 && d10never.body?.error === 'JoinRequestNotFound' &&
     r10again.body?.status === 'pending',
-  `bob asked ${err(r10)}; alice denied ${d10.status}; her list then holds ${(l10.body?.requests ?? []).length}; deny again ${err(d10again)}; deny someone who never asked ${err(d10never)}; bob asked again after the denial ${err(r10again)}; tidied (cancel here and at day 3's group) ${tidy.map((r) => r.status).join(' ')}`,
+  `bob asked ${err(r10)}; alice denied ${d10.status}; her list then holds ${(l10.body?.requests ?? []).length}; deny again ${err(d10again)}; deny someone who never asked ${err(d10never)}; bob asked again after the denial ${err(r10again)}; tidied (cancel here and at the other group) ${tidy.map((r) => r.status).join(' ')}`,
 )
 
 // ---------- f11 ----------

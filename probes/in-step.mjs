@@ -1,19 +1,17 @@
-// probe-in-step.mjs: the host keeps a group's records in step itself (om-3r2nx.11).
-//   k1  alice makes her group's meta space public and writes its declaration, as atmo's save does
+// in-step.mjs: the host keeps a group's records in step itself.
+//   k1  alice makes her group's meta space public and writes its declaration, as an app's save does
 //   k2  she makes meta private again with a putRecord of its access record alone: when the write
 //       returns, the host has brought the declaration down
-//   k3  meta made public again: the host writes no declaration (that is the group's app's choice,
-//       TS 2026-10-17); one written by her, then meta made private by an applyWrites, comes down
+//   k3  meta made public again: the host writes no declaration (that is the group's app's choice);
+//       one written by her, then meta made private by an applyWrites, comes down
 //   k4  a create cut short once its account exists (it fails there): the host removes the account,
 //       so the address resolves to nothing, the repo is gone and no note is left
 //   k5  a create cut short by the host stopping (it hangs once its account exists, and the host is
 //       restarted): at the next start the account is removed and the note dropped; alice's
 //       finished group is still there
 //   k6  the address freed in k4 makes a group again, with alice its admin
-// Restarts the host container (grouphost-spike), so run it where docker reaches the devnet's.
-// Run from spike/ (Chromium needs the devnet's leaf certificate):
-//   SG_LEAF_FILE=/workspaces/scratch/atproto-devnet/data/https/leaf.crt \
-//     /workspaces/scratch/atproto-devnet/scripts/https-run node probe-in-step.mjs > run-in-step.log 2>&1
+// Restarts the host's container once, so run it where docker reaches the snowglobe's.
+// Run from probes/: snowglobe run node in-step.mjs
 import { execFileSync } from 'node:child_process'
 import { GROUP_DOMAIN, HOST, HOST_CONTAINER, META, MEMBERS, alice, as, call, groupSignIn, log, now, sleep, spaceUri, spike, state, summary, verdict } from './lib.mjs'
 
@@ -31,7 +29,7 @@ const describe = (did) => call('none', HOST, 'GET', 'com.atproto.repo.describeRe
 const noted = async (label) => ((await state({})).creates ?? []).some((c) => c.handle === `${label}${GROUP_DOMAIN}`)
 const gone = (r) => r.status === 400
 
-log(`# probe-in-step ${now()}`)
+log(`# in-step ${now()}`)
 
 // ---------- k1 ----------
 log('\n## k1 alice makes her group public and declares it\n')

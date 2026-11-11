@@ -1,10 +1,10 @@
-// probe-public-signin.mjs: the host's sign-in works from a browser that is not on the host's machine.
+// public-signin.mjs: the host's sign-in works from a browser that is not on the host's machine.
 //   p1  the host serves its sign-in client's metadata at its own https name: a public web client,
 //       whose id is that URL and whose redirect is on the same name (nothing on a loopback address)
 //   p2  a group is made through the host's sign-in and consent pages, and every request the browser
-//       made went to a devnet name (the probe's own app callback aside): none to the loopback address
+//       made went to a name in the snowglobe (the probe's own app callback aside): none to the loopback address
 //       the old sign-in sent it to, so the flow ran by name alone
-// Run: ../../atproto-devnet/scripts/https-run node probe-public-signin.mjs 2>&1 | tee run-public-signin.log
+// Run from probes/: snowglobe run node public-signin.mjs
 import { DOMAIN, HOST, META, alice, groupSignIn, listRecords, log, summary, verdict } from './lib.mjs'
 
 log('\n## p1 the sign-in client\n')
@@ -33,7 +33,7 @@ const hosts = [...new Set(A.seen.map((u) => new URL(u).host))]
 // The app's own callback is the probe's loopback listener (lib.mjs): the app, not the host.
 const stray = A.seen.filter((u) => {
   const h = new URL(u)
-  return !(h.host.endsWith(`.${DOMAIN}`) || h.host.endsWith('.devnet.internal') || h.host === 'plc.directory' || h.host === '127.0.0.1:39418')
+  return !(h.host.endsWith(`.${DOMAIN}`) || h.host === '127.0.0.1:39418')
 })
 const onHostStart = A.seen.some((u) => u.startsWith(`${HOST}/signin/start`))
 const onHostCallback = A.seen.some((u) => u.startsWith(`${HOST}/signin/callback`))

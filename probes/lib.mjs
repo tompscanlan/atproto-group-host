@@ -1,12 +1,12 @@
-// lib.mjs: what the day-2 and day-3 probes share. Logins live in data/accounts.env (mode 600) and
-// are never printed; tokens are never printed.
+// lib.mjs: what the probes share. They run on a snowglobe made from probes/snowglobe.yml, under
+// `snowglobe run --app probes`, which hands them the settings below and makes Node trust the
+// snowglobe's certificate. Passwords and tokens are never printed.
 import crypto from 'node:crypto'
 import dns from 'node:dns'
-import fs from 'node:fs'
 import http from 'node:http'
 import https from 'node:https'
 import path from 'node:path'
-import { createRequire } from 'node:module'
+import { chromium } from 'playwright'
 import { OAuthClient, MemoryStore } from '@atcute/oauth-node-client'
 import {
   CompositeDidDocumentResolver,
@@ -15,47 +15,33 @@ import {
   WebDidDocumentResolver,
   WellKnownHandleResolver,
 } from '@atcute/identity-resolver'
-const readEnv = (file) =>
-  Object.fromEntries(
-    fs.readFileSync(file, 'utf8').split('\n').filter((l) => /^[A-Z_]+=/.test(l)).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]),
-  )
-// The devnet devnet/host.sh uses, and its own facts (data/devnet.env, which its https-up.sh writes).
-const DEVNET = process.env.DEVNET ?? '/workspaces/scratch/atproto-devnet'
-const DENV = readEnv(path.join(DEVNET, 'data/devnet.env'))
-// The devnet's settings were DEVNET_* until 2026-10-20 and are SG_* now: either name works, from
-// the environment or the devnet's devnet.env.
-for (const k of ['DOMAIN', 'BIND', 'PROJECT', 'CA_FILE', 'LEAF_FILE', 'BROWSER'])
-  if (process.env[`SG_${k}`] === undefined && process.env[`DEVNET_${k}`] !== undefined) process.env[`SG_${k}`] = process.env[`DEVNET_${k}`]
-const denv = (k) => DENV[`SG_${k}`] || DENV[`DEVNET_${k}`]
-// The browser launcher reads the domain and nginx's address from the environment; the devnet's own
-// are the default, so a copy of the devnet under another domain needs only DEVNET.
-if (denv('DOMAIN')) process.env.SG_DOMAIN ??= denv('DOMAIN')
-if (denv('BIND')) process.env.SG_BIND ??= denv('BIND')
-// A Chromium launcher that trusts the devnet's certificate (devnet-browser.mjs here). Point SG_BROWSER at your own.
-// It finds the certificate through SG_CA_FILE, which defaults to that devnet's.
-process.env.SG_CA_FILE ??= path.join(DEVNET, 'data/https/ca.crt')
-const { launchBrowser } = await import(process.env.SG_BROWSER ?? './devnet-browser.mjs')
-
-const require = createRequire(import.meta.url)
-const { chromium } = require(process.env.PLAYWRIGHT_DIR ?? '/home/node/.local/share/mise/installs/npm-playwright/1.63.0/node_modules/playwright')
+const setting = (name) => {
+  const v = process.env[name]
+  if (!v) throw new Error(`${name} is not set: run the probe with snowglobe run --app probes (see the README)`)
+  return v
+}
 
 export const HERE = path.dirname(new URL(import.meta.url).pathname)
-// A run's screenshots go in a folder of their own, so no run writes over another's or over the
-// ones committed in spike/.
+// A run's screenshots go in a folder of their own, so no run writes over another's.
 const SHOTS = path.join(HERE, 'shots', `${new Date().toISOString().replace(/[:.]/g, '-')}-${path.basename(process.argv[1] ?? 'run', '.mjs')}`)
-// The host under test: GROUP_HOST_URL, as atmo names it, else the one devnet/host.sh runs. A
-// snowglobe.yml group host is https://<name>.<domain>.
-export const HOST = process.env.GROUP_HOST_URL ?? 'https://grouphost.devnet.internal'
-// The host's container, for the probes that read its log or restart it (devnet/host.sh sets HOST_CONTAINER for a second host).
-export const HOST_CONTAINER = process.env.HOST_CONTAINER ?? 'grouphost-spike'
-// Every devnet name sits under the devnet's domain; a devnet.env from before the setting means devnet.test.
-export const DOMAIN = denv('DOMAIN') || 'devnet.test'
-export const ALPHA = DENV.ALPHA_PDS_URL || `https://alpha.${DOMAIN}`
-// A group's handle ending: GROUP_HANDLE_DOMAIN, else, for a host at GROUP_HOST_URL, its own name
-// (a snowglobe.yml group host's groups are <label>.<name>.<domain>), else .gh.<domain>
-// (devnet/compose.yaml).
-export const GROUP_DOMAIN =
-  process.env.GROUP_HANDLE_DOMAIN ?? (process.env.GROUP_HOST_URL ? `.${new URL(HOST).hostname}` : `.gh.${DOMAIN}`)
+// The host under test, and the spaces PDS the test people's own accounts are on.
+export const HOST = setting('GROUP_HOST_URL')
+export const ALPHA = setting('ALPHA_URL')
+// The snowglobe's PLC directory. plc.directory is the real one, which has never heard of these DIDs.
+export const PLC = setting('PLC_URL')
+// The snowglobe's domain: every name in it ends with this.
+export const DOMAIN = setting('SNOWGLOBE_DOMAIN')
+// The host's container, for the probes that read its log, look in its data or restart it.
+export const HOST_CONTAINER = setting('HOST_CONTAINER')
+// A group's handle ending: the host's own name, which the host gives its PDS as the service
+// handle domain.
+export const GROUP_DOMAIN = process.env.GROUP_HANDLE_DOMAIN ?? `.${new URL(HOST).hostname}`
+
+// Chromium, for the sign-in pages. It does not trust the snowglobe's CA, so the browser ignores
+// certificate errors; Node's own requests still check certificates. A container that runs as root
+// cannot use Chromium's sandbox (CHROMIUM_NO_SANDBOX=1 there).
+const launchBrowser = () => chromium.launch(process.env.CHROMIUM_NO_SANDBOX ? { args: ['--no-sandbox'] } : {})
+const newPage = async (browser) => (await browser.newContext({ ignoreHTTPSErrors: true })).newPage()
 export const META = 'group.opensocial.meta'
 export const MEMBERS = 'group.opensocial.members'
 export const now = () => new Date().toISOString().replace(/\.\d+Z$/, 'Z')
@@ -74,14 +60,17 @@ export function summary() {
   log(`\n${verdicts.filter((v) => v.ok).length}/${verdicts.length} pass`)
 }
 
-// The people's logins: GH_ALICE_* and GH_BOB_*, in GH_ACCOUNTS_FILE, else data/accounts.env here.
-const E = readEnv(process.env.GH_ACCOUNTS_FILE ?? path.join(HERE, 'data/accounts.env'))
-export const alice = { who: 'alice', handle: E.GH_ALICE_HANDLE, password: E.GH_ALICE_PASSWORD, did: E.GH_ALICE_DID }
-export const bob = { who: 'bob', handle: E.GH_BOB_HANDLE, password: E.GH_BOB_PASSWORD, did: E.GH_BOB_DID }
+// The two test people, alice and bob, with accounts on the spaces PDS.
+const person = (who) => {
+  const W = who.toUpperCase()
+  return { who, handle: setting(`${W}_HANDLE`), password: setting(`${W}_PASSWORD`), did: setting(`${W}_DID`) }
+}
+export const alice = person('alice')
+export const bob = person('bob')
 
-// GET https://<handle>/.well-known/atproto-did as any client on the devnet would, certificate
-// check included. No hosts file lists a new handle, so the name is sent where the alpha's name
-// goes: the devnet's nginx, which picks the server by name.
+// GET https://<handle>/.well-known/atproto-did as any client would, certificate check included.
+// The name is sent where the PDS's name goes, the snowglobe's front door, which picks the server by
+// name, so a handle made a moment ago needs nothing new from DNS.
 const viaNginx = (_name, opts, cb) => dns.lookup(new URL(ALPHA).hostname, opts, cb)
 export const wellKnownDid = (handle) =>
   new Promise((resolve) => {
@@ -110,7 +99,7 @@ const parse = (text) => {
 // ---------- the app: an OAuth client of the host, one per person ----------
 const actorResolver = new LocalActorResolver({
   handleResolver: new WellKnownHandleResolver(),
-  didDocumentResolver: new CompositeDidDocumentResolver({ methods: { plc: new PlcDidDocumentResolver(), web: new WebDidDocumentResolver() } }),
+  didDocumentResolver: new CompositeDidDocumentResolver({ methods: { plc: new PlcDidDocumentResolver({ apiUrl: PLC }), web: new WebDidDocumentResolver() } }),
 })
 const CB_PORT = 39418
 const REDIRECT = `http://127.0.0.1:${CB_PORT}/cb`
@@ -143,11 +132,11 @@ export async function groupSignIn(person, { create, groupDid, label: shot, scope
     rs.end('ok')
   })
   await new Promise((r) => server.listen(CB_PORT, '127.0.0.1', r))
-  const browser = await launchBrowser(chromium)
+  const browser = await launchBrowser()
   const typed = []
   const out = { ok: false, app, typed, kept: [], dropped: [], consentText: null, refused: [], displayNameFields: null, start: null, seen: [], keyPage: false }
   try {
-    const p = await (await browser.newContext()).newPage()
+    const p = await newPage(browser)
     p.on('request', (r) => out.seen.push(r.url().split('#')[0]))
     await p.goto(url.toString(), { waitUntil: 'load', timeout: 60000 })
     await p.waitForURL(/\/signin\/start/, { timeout: 30000 })
@@ -268,9 +257,9 @@ export async function ownOAuth(person, scopes) {
     rs.end('ok')
   })
   await new Promise((r) => server.listen(OWN_CB_PORT, '127.0.0.1', r))
-  const browser = await launchBrowser(chromium)
+  const browser = await launchBrowser()
   try {
-    const p = await (await browser.newContext()).newPage()
+    const p = await newPage(browser)
     await p.goto(url.toString(), { waitUntil: 'load', timeout: 60000 })
     await p.waitForSelector('input[name=password]', { timeout: 30000 })
     const user = p.locator('input[name=username]')
@@ -333,7 +322,7 @@ export async function ownSession(person) {
 export const asOwn = (s, method, nsid, opts = {}) =>
   call(`${s.who} own session`, s.base, method, nsid, { ...opts, headers: { ...(opts.headers || {}), authorization: `Bearer ${s.jwt}` } })
 
-// ---------- RFC 9421 space credentials (from sandbox/opensocial/probe-private-rsvp.mjs) ----------
+// ---------- RFC 9421 space credentials ----------
 const b64 = (bytes) => Buffer.from(bytes).toString('base64')
 const b58 = (bytes) => {
   const A = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'

@@ -1,13 +1,13 @@
-// probe-day3.mjs: the host enforces from the group's records, on the https devnet.
+// enforcement.mjs: the host enforces from the group's records.
 //   e1  a space credential follows the person's roles in that space's `access` record
 //   e2  a role that may write memberships may assign only its `assignable` roles
 //   e3  membership, role, access and permissions writes follow their record rules
-//   e4  the 10-11 walk's member refusals: a plain member's session is refused all five
+//   e4  a plain member's session is refused five writes an admin may make
 //   e5  a removed member gets no credential and is not tracked as a writer
 //   e6  a public `access` record lets anyone read that space, and only that one
 //   e7  nobody reconfigures, wipes or migrates a group space, an admin's session included
 //   e8  the group writes only in spaces that have an `access` record
-// Run: ../../atproto-devnet/scripts/https-run node probe-day3.mjs 2>&1 | tee run-day3.log
+// Run from probes/: snowglobe run node enforcement.mjs
 import {
   HOST, META, MEMBERS, alice, bob, as, asOwn, credentialFor, groupSignIn, listRecords, listWriters, log, ownSession, sleep, spaceUri, spike, state, summary, verdict,
 } from './lib.mjs'

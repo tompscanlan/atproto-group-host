@@ -1,0 +1,17 @@
+{
+  "lexicon": 1,
+  "id": "test.grouphost.calendar",
+  "defs": {
+    "main": {
+      "type": "space",
+      "description": "A test space type for the probes: a group's calendar, as an events app would declare one.",
+      "key": "literal:self",
+      "name": "Group calendar",
+      "collections": [
+        "community.lexicon.calendar.event",
+        "community.lexicon.calendar.rsvp",
+        "group.opensocial.access"
+      ]
+    }
+  }
+}

@@ -1,17 +1,17 @@
-// probe-hints.mjs: the hints an app puts on the link to the host's start page (gh_name, gh_person),
-// on the https devnet. Each check reads the start page's input values before anything is typed.
+// hints.mjs: the hints an app puts on the link to the host's start page (gh_name, gh_person).
+// Each check reads the start page's input values before anything is typed.
 //   h1  gh_name=Kona Trail Runners suggests the address kona-trail-runners
 //   h2  a name longer than 18 characters is cut to 18, and a dash left at the end is dropped
 //   h3  a name that comes to under 3 characters suggests nothing
-//   h4  gh_person=<a devnet DID> fills in that DID's handle
+//   h4  gh_person=<a DID> fills in that DID's handle
 //   h5  a gh_person that does not resolve leaves the handle empty
 //   h6  no hints: both fields empty, as before
 //   h7  a hostile gh_name and gh_person show only as a value, never as markup, and nothing runs
 //   h8  the act-for-group page fills in the handle from gh_person
 //   h9  a hint is never trusted: with gh_person naming bob, signing in as alice makes alice the
 //       creator, and nothing is written or granted for bob
-// Run: ../../atproto-devnet/scripts/https-run node probe-hints.mjs 2>&1 | tee run-hints.log
-// Logins live in data/accounts.env (mode 600) and are never printed; tokens are never printed.
+// Run from probes/: snowglobe run node hints.mjs
+// Passwords and tokens are never printed.
 import { GROUP_DOMAIN, HOST, META, MEMBERS, alice, bob, groupSignIn, listRecords, log, state, summary, verdict } from './lib.mjs'
 
 const SCOPES = ['atproto', `space:${META}?authority=self&skey=self&action=read`]
@@ -69,7 +69,7 @@ const h8 = group ? (await start({ gh_person: alice.did, gh_name: 'Kona Trail Run
 verdict(
   'h8',
   h8?.handle === alice.handle && h8?.label === null && h8?.inputs === 2,
-  `act page for ${group ?? 'no group (run probe-day2 first)'}, gh_person=${alice.did}: ${show(h8)} (want handle ${alice.handle})`,
+  `act page for ${group ?? 'no group (run sessions.mjs first)'}, gh_person=${alice.did}: ${show(h8)} (want handle ${alice.handle})`,
 )
 
 log('\n## h9 the hint is not trusted: gh_person names bob, alice signs in\n')

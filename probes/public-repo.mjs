@@ -1,8 +1,9 @@
-// probe-day5.mjs: the admin role's seeded grants include repo: and blob: (om-3r2nx.6.2), so an
-// admin's group session can write the group's public repo and upload images, as atmo needs for
-// the declaration, the group's avatar and public group events.
+// public-repo.mjs: the admin role's starting grants include repo: and blob:, so an admin's group
+// session can write the group's public repo and upload images, as an app needs for the
+// declaration, the group's avatar and public group events. The app here is an events app: its
+// repo: and blob: items are the ones atmo (atmo.rsvp) asks for, and its calendar is a test type.
 //   h1  a new group's admin role is granted repo:* and blob:*/*, and alice, its creator, is
-//       offered atmo's repo: and blob: items at consent
+//       offered the app's repo: and blob: items at consent
 //   h2  with that group session she writes group.opensocial.declaration to the group's public repo
 //       (com.atproto.repo.putRecord) and uploads an image (com.atproto.repo.uploadBlob); anyone
 //       reads the declaration back
@@ -10,21 +11,20 @@
 //       uploadBlob are refused; the declaration is unchanged
 //   h4  the cut on every request covers them too: bob made admin is offered both and writes; demoted
 //       to member, the same session is refused
-//   h5  admin reads and writes in every group space (TS, 2026-10-15): alice's session from the create,
-//       authorized before the calendar space existed, makes that space and writes an event in it
-// Run from spike/ (Chromium needs the devnet's leaf certificate):
-//   SG_LEAF_FILE=/workspaces/scratch/atproto-devnet/data/https/leaf.crt \
-//     /workspaces/scratch/atproto-devnet/scripts/https-run node probe-day5.mjs > run-day5.log 2>&1
+//   h5  admin reads and writes in every group space: alice's session from the create, authorized
+//       before the calendar space existed, makes that space and writes an event in it
+// Run from probes/: snowglobe run node public-repo.mjs
 import { HOST, META, MEMBERS, alice, bob, as, call, groupSignIn, log, now, spaceUri, state, summary, verdict } from './lib.mjs'
 
 const NS = 'group.opensocial'
 const DECLARATION = `${NS}.declaration`
-// What atmo's group session asks for (atmo-events apps/web/src/lib/groups/server/session.ts,
-// scope.repo and scope.blob from @atcute/oauth-node-client), word for word.
+// What atmo's group session asks for, word for word (its repo: and blob: items come from
+// @atcute/oauth-node-client's scope helpers).
 const REPO = `repo?collection=${DECLARATION}&collection=community.lexicon.calendar.event`
 const BLOB = 'blob?accept=image/*'
-// atmo's calendar space type, published on the devnet's lexicon authority (day 5.2b).
-const CALENDAR = 'rsvp.atmo.group.calendar'
+// A calendar space type, published from probes/lexicons/test/. A bare space:<type> grant, such as
+// CAL_READ, resolves only through the type's published lexicon.
+const CALENDAR = 'test.grouphost.calendar'
 const EVENT = 'community.lexicon.calendar.event'
 const CAL_READ = `space:${CALENDAR}?authority=self&action=read`
 const CAL_WRITE = `space:${CALENDAR}?authority=self&collection=${EVENT}&action=create&action=update&action=delete`
@@ -56,7 +56,7 @@ const declare = (session, who, group, meta) =>
   as(session, who, 'POST', 'com.atproto.repo.putRecord', { body: { repo: group, collection: DECLARATION, rkey: 'self', record: { $type: DECLARATION, meta } } })
 const readDeclaration = (group) => call('none', HOST, 'GET', 'com.atproto.repo.getRecord', { params: { repo: group, collection: DECLARATION, rkey: 'self' } })
 
-log(`# probe-day5 ${now()}`)
+log(`# public-repo ${now()}`)
 
 // ---------- h1 ----------
 log('\n## h1 alice creates a group; admin is granted repo: and blob:\n')

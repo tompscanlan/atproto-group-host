@@ -1,4 +1,4 @@
-// probe-day2.mjs: drives the group-host spike's second round on the https devnet.
+// sessions.mjs: making a group, and the sessions people get to act for it.
 //   d1  prompt=create makes a group with its starting records, and the app gets its session
 //   d2  every token the host issued for the group names the person who authorized it
 //   d3  the group sign-in leaves no group session on the device
@@ -6,9 +6,9 @@
 //   d5  removing a member cuts their existing session on the next request
 //   d6  a refreshed token keeps its person
 //   d7  the token-to-person table survives a host restart
-//   d8  the group's handle resolves through the devnet's nginx, as it would for any client
-// Run: ../../atproto-devnet/scripts/https-run node probe-day2.mjs 2>&1 | tee run-day2.log
-// Logins live in data/accounts.env (mode 600) and are never printed; tokens are never printed.
+//   d8  the group's handle resolves by name, as it would for any client
+// Restarts the host's container once.
+// Run from probes/: snowglobe run node sessions.mjs
 import { execFileSync } from 'node:child_process'
 import { GROUP_DOMAIN, HOST, HOST_CONTAINER, META, MEMBERS, alice, bob, as, listRecords, groupSignIn as signIn, log, sleep, spaceUri, state, summary, verdict, wellKnownDid } from './lib.mjs'
 
@@ -112,11 +112,11 @@ if (G) {
   verdict('d7', aRead3.status === 200, `alice's session reads ${aRead3.status} after the host restarted`)
 
   // ---------- d8 ----------
-  log('\n## d8 the group\'s handle resolves through the devnet\'s nginx\n')
+  log('\n## d8 the group\'s handle resolves by name\n')
   const handle = `${label}${GROUP_DOMAIN}`
   const wk = await wellKnownDid(handle)
   log(`- GET https://${handle}/.well-known/atproto-did -> ${wk.status} ${wk.body.slice(0, 80)}`)
-  verdict('d8', wk.status === 200 && wk.body === G, `https://${handle}/.well-known/atproto-did, with the devnet's certificate, answers the group's DID (${wk.status})`)
+  verdict('d8', wk.status === 200 && wk.body === G, `https://${handle}/.well-known/atproto-did, with the snowglobe's certificate, answers the group's DID (${wk.status})`)
 }
 
 summary()

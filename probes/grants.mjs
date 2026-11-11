@@ -1,4 +1,4 @@
-// probe-grants.mjs: nobody grants more than they hold, on the https devnet (the proposal's rule for
+// grants.mjs: nobody grants more than they hold (the proposal's rule for
 // `access` and `permissions` writes, proposal.md at 2b41a9b).
 //   h1  the admin's group session gets each permission set it asks for, whole
 //   h2  a moderator changes only the grants of roles it may assign
@@ -7,7 +7,7 @@
 //   h4  a moderator adds to an `assignable` list only roles it may assign
 //   h5  one refused write in a batch leaves the whole batch unwritten
 //   h6  createSpace grants only what the caller holds, to roles it may assign
-// Run: "$DEVNET/scripts/https-run" node probe-grants.mjs 2>&1 | tee run-grants.log
+// Run from probes/: snowglobe run node grants.mjs
 import { META, MEMBERS, alice, bob, as, groupSignIn, listRecords, log, spaceUri, spike, state, summary, verdict } from './lib.mjs'
 
 const NS = 'group.opensocial'

@@ -1,10 +1,10 @@
-// probe-cancel.mjs: saying no at your own PDS during a group create ends the app's request as a
+// cancel.mjs: saying no at your own PDS during a group create ends the app's request as a
 // refusal, not an error page.
 //   c1  the person presses Deny access on their own PDS: the app is sent back error=access_denied
 //       with its own state and the host as issuer, the host's page never shows a server error, and
 //       no group is made
 //   c2  the app's request is gone afterwards: the same authorization URL no longer starts a sign-in
-// Run: ../../atproto-devnet/scripts/https-run node probe-cancel.mjs 2>&1 | tee run-cancel.log
+// Run from probes/: snowglobe run node cancel.mjs
 import { GROUP_DOMAIN, HOST, META, alice, groupSignIn, log, summary, verdict } from './lib.mjs'
 
 log('\n## c1 Deny access at your own PDS\n')

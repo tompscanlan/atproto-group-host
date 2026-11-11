@@ -1,4 +1,4 @@
-// probe-recovery.mjs: a new group's creator gets its recovery key, once (spec 001 FR-001g, om-3r2nx.7).
+// recovery-key.mjs: a new group's creator gets its recovery key, once.
 //   k1  a create shows the recovery key page before consent, and the key's private half matches the
 //       public half the page names
 //   k2  the group's PLC lists that key first among its rotation keys, ahead of the host's own
@@ -7,12 +7,11 @@
 //       consent named the creator as its admin
 //   k5  the host keeps no copy: the private key is in neither the host's log nor anything under /data
 // Nothing here prints, logs or screenshots the private key. Its checks print only what they found.
-// Run: "$DEVNET/scripts/https-run" node probe-recovery.mjs 2>&1 | tee run-recovery.log
+// Run from probes/: snowglobe run node recovery-key.mjs
 import { execFileSync } from 'node:child_process'
 import { Secp256k1PrivateKeyExportable, parsePrivateMultikey } from '@atcute/crypto'
-import { HOST_CONTAINER, alice, groupSignIn, log, summary, verdict } from './lib.mjs'
+import { HOST_CONTAINER, PLC, alice, groupSignIn, log, summary, verdict } from './lib.mjs'
 
-const PLC = process.env.PLC_URL ?? 'https://plc.directory' // the devnet's PLC, by the name the probes resolve
 const hex = (bytes) => Buffer.from(bytes).toString('hex')
 
 log('\n## create a group, and read its recovery key page\n')

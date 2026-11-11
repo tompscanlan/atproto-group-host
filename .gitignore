@@ -1,5 +1,5 @@
 node_modules/
 *.log
-# What the probes write: screenshots per run, and the snowglobe's lexicons copied in for a run.
+# Screenshots from each probe run, and the opensocial lexicons copied in from the proposal.
 probes/shots/
-probes/lexicons/
+probes/lexicons/group/

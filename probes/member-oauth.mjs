@@ -1,18 +1,19 @@
-// probe-day5-3.mjs: a person's own acts through an OAuth session at their own PDS, the way atmo
-// will make them (om-3r2nx.6.4). Day 4 proxied with a password session, which no app holds.
+// member-oauth.mjs: a person's own acts through an OAuth session at their own PDS, the way an app
+// makes them. group-methods.mjs proxies with a password session, which no app holds.
 //   g1  bob signs in at alpha with OAuth, asking only for the three rpc: items; requestJoin sent
 //       to alpha with `atproto-proxy: <group>#atproto_pds` reaches the host, which logs bob as the
 //       member and the group as the audience
 //   g2  the same session's cancelJoinRequest (or leaveGroup, if the group admitted him) reaches
 //       the host too, and bob ends holding no request and no membership
 //   g3  an OAuth session without the rpc: items is refused at alpha, and the host logs no call
-// Run from spike/:
-//   SG_LEAF_FILE=/workspaces/scratch/atproto-devnet/data/https/leaf.crt \
-//     /workspaces/scratch/atproto-devnet/scripts/https-run node probe-day5-3.mjs > run-day5-3.log 2>&1
-import { ALPHA, bob, log, now, ownOAuth, state, summary, verdict } from './lib.mjs'
+// Run from probes/: snowglobe run node member-oauth.mjs
+import { ALPHA, alice, bob, groupSignIn, log, now, ownOAuth, state, summary, verdict } from './lib.mjs'
 
-// Day 4's group of record; bob held no request or membership there when day 4 ended.
-const GROUP = process.env.GROUP ?? 'did:plc:66pgsrgfxpd66hpqpneupgo4'
+// A new group of alice's, by approval (a new group's join policy), where bob holds no request or
+// membership yet.
+const made = await groupSignIn(alice, { create: { label: `mo${Date.now().toString(36)}` }, scopes: ['atproto'] })
+if (!made.ok) throw new Error('the group was not made')
+const GROUP = made.session.did
 const MEMBER_RPC = ['requestJoin', 'cancelJoinRequest', 'leaveGroup'].map((m) => `rpc:group.opensocial.${m}?aud=*`)
 
 // A member method, sent to the person's own PDS for the group's host.
@@ -36,7 +37,7 @@ async function viaOwnPds(session, name) {
 const hostCalls = async () => (await state({ group: GROUP })).methodCalls ?? []
 const newCalls = (before, after) => after.filter((c) => !before.some((b) => b.at === c.at && b.nsid === c.nsid))
 
-log(`# probe-day5-3 ${now()} group ${GROUP}`)
+log(`# member-oauth ${now()} group ${GROUP}`)
 const start = await state({ group: GROUP })
 const pendingBefore = (start.joinRequests ?? []).filter((r) => r.member === bob.did)
 log(`- before: bob's pending requests here ${pendingBefore.length}`)

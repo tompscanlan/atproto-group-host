@@ -1,4 +1,4 @@
-// probe-subscribe-repos.mjs: the host serves com.atproto.sync.subscribeRepos, the feed a relay follows.
+// subscribe-repos.mjs: the host serves com.atproto.sync.subscribeRepos, the feed a relay follows.
 //   f1  subscribeRepos opens at the host: the websocket upgrade is answered 101. A host that listens
 //       without the PDS's upgrade handler (before 9645bcc) answers it as a plain GET instead
 //   f2  a group writes to its public repo (alice's new group puts its declaration) and the commit
@@ -6,8 +6,8 @@
 //   f3  the delete that takes it back down arrives too, later in the feed
 // The feed is opened before anything is written, so a host that refuses it gets no group made.
 // FEED_URL points the feed at another host (http://127.0.0.1:<port>, a throwaway one for a
-// control); the default is the host's own name, through the devnet's nginx, as a relay reaches it.
-// Run: ../../atproto-devnet/scripts/https-run node probe-subscribe-repos.mjs 2>&1 | tee run-subscribe-repos.log
+// control); the default is the host's own name, as a relay reaches it.
+// Run from probes/: snowglobe run node subscribe-repos.mjs
 import crypto from 'node:crypto'
 import http from 'node:http'
 import https from 'node:https'
@@ -182,7 +182,7 @@ function openFeed(url) {
 const opIn = (repo, action) => (f) => f.header?.t === '#commit' && f.body?.repo === repo && (f.body.ops ?? []).some((o) => o.action === action && o.path === PATH)
 const brief = (f) => (f ? { t: f.header?.t, seq: f.body?.seq, repo: f.body?.repo, rev: f.body?.rev, ops: (f.body?.ops ?? []).map((o) => `${o.action} ${o.path}`) } : null)
 
-log(`# probe-subscribe-repos ${now()}`)
+log(`# subscribe-repos ${now()}`)
 
 // ---------- f1 ----------
 log(`\n## f1 subscribeRepos opens at ${FEED.origin}\n`)
