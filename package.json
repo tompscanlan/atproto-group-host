@@ -2,6 +2,7 @@
   "name": "atproto-group-host",
   "private": true,
   "description": "A group host for atproto groups: a PDS for group accounts, built on the spaces alpha PDS",
+  "license": "MIT",
   "type": "module",
   "dependencies": {
     "@atcute/crypto": "2.4.1",
