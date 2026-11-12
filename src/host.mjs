@@ -75,9 +75,9 @@ const consent = new Map() // requestUri -> what the host's consent page shows
 const requestPerson = new Map() // OAuth request id -> person DID, set when the ticket is minted
 const codePerson = new Map() // authorization code -> person DID, set when the request is authorized
 const authorizedBy = [] // { groupDid, personDid, at }: which person each group sign-in stands for
-const accessCalls = [] // every checkUserAccess the PDS made
+const accessCalls = [] // every checkUserAccess the PDS made (capped)
 const narrowings = [] // every per-request cut, newest last (capped)
-const refusals = [] // every write, space change or group sign-in the host refused, by its gate (no `by`), its PDS or its sign-in
+const refusals = [] // every write, space change or group sign-in the host refused, by its gate (no `by`), its PDS or its sign-in (capped)
 
 // Which person authorized each token. Kept on the data volume so a restart does not turn every
 // mapped token into an unmapped one (an unmapped token is cut to "atproto").
@@ -782,6 +782,7 @@ async function toConsent(res, p, group, personDid) {
   log('person signed in through own PDS', { personDid, groupDid: group.did, mode: p.mode, roles: grants.roles })
   if (!grants.roles.length) {
     refusals.push({ at: new Date().toISOString(), by: 'sign-in', group: group.did, personDid, message: 'holds no role' })
+    if (refusals.length > 50) refusals.shift()
     return res.status(403).send(`You (${personDid}) hold no role in ${group.did}`)
   }
 
@@ -1067,6 +1068,7 @@ outer.use((req, res, next) => {
       const nsid = req.path.split('.').pop()
       const refusal = { error: body?.error ?? null, message: body?.message ?? null }
       refusals.push({ at: new Date().toISOString(), by: 'pds', nsid, status: res.statusCode, group: caller.sub, personDid: caller.personDid, ...refusal })
+      if (refusals.length > 50) refusals.shift()
       log('group write refused by the PDS', { nsid, personDid: caller.personDid, status: res.statusCode, error: refusal.error })
     }
     return end.call(this, chunk, ...rest)
@@ -1092,6 +1094,7 @@ outer.post(
       const refusal = await checkGroupWrites(body.repo, body.space, ops, caller)
       if (refusal) {
         refusals.push({ at: new Date().toISOString(), nsid, group: body.repo, space: body.space, personDid: caller.personDid ?? null, ...refusal })
+        if (refusals.length > 50) refusals.shift()
         log('group write refused', { nsid, personDid: caller.personDid ?? null, ...refusal })
         res.locals.refusalRecorded = true
         return res.status(refusal.status).json(refusalBody(refusal))
@@ -1167,6 +1170,7 @@ const spaceGuard = (authorityOf) => async (req, res, next) => {
       const nsid = req.path.split('.').pop()
       const refusal = forbidden(`group spaces change only through the group host, not ${nsid}`)
       refusals.push({ at: new Date().toISOString(), nsid, group: authority, personDid: caller.personDid ?? null, ...refusal })
+      if (refusals.length > 50) refusals.shift()
       log('space change refused', { nsid, authority })
       return res.status(refusal.status).json(refusalBody(refusal))
     }
@@ -1201,6 +1205,7 @@ outer.get('/xrpc/com.atproto.managedspace.checkUserAccess', async (req, res) => 
     iss = payload.iss
   } catch (err) {
     accessCalls.push({ space, user, kind, iss: null, error: err.message })
+    if (accessCalls.length > 50) accessCalls.shift()
     log('checkUserAccess: bad service auth', err.message)
     return res.status(401).json({ error: 'AuthRequired', message: err.message })
   }
@@ -1208,6 +1213,7 @@ outer.get('/xrpc/com.atproto.managedspace.checkUserAccess', async (req, res) => 
   let decision = { authorized: false, why: 'caller is not the space authority' }
   if (iss === parseSpace(space).authority) decision = await decideAccess(String(space), String(user), String(kind))
   accessCalls.push({ space, user, kind, clientId: clientId ?? null, iss, ...decision, at: new Date().toISOString() })
+  if (accessCalls.length > 50) accessCalls.shift()
   log('checkUserAccess', { space, user, kind, ...decision })
   res.json({ authorized: decision.authorized })
 })
