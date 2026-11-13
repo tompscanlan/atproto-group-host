@@ -27,7 +27,7 @@ The host is one Node process:
 - `@atproto/pds` from the alpha image, made with `PDS.create(cfg, secrets)` and no overrides. It
   reads the usual `PDS_*` settings.
 - An outer express app in front of it. The host's own routes answer first: the sign-in pages, the
-  group methods, the write gate and `checkUserAccess`. Everything else falls through to the
+  group methods, the write gate and `checkAccess`. Everything else falls through to the
   unmodified PDS.
 - A few wrappers on the PDS's OAuth provider, installed at runtime. No upstream file is patched.
   The wrappers reach `protected` fields, so each one has to be checked again when the alpha moves:
@@ -125,7 +125,8 @@ Two records grant a role things, and they are easy to mix up:
 ## Enforcement
 
 Every group space is created under the `com.atproto.managedspace` policy with the host as its
-managing app. The PDS then asks the host's `checkUserAccess` on every read and write.
+managing app. The PDS then asks the host's `checkAccess` whether a person may read and write,
+when it issues a credential and when a member's PDS announces a write.
 
 - **Reads.** The host issues a space credential to a person whose current roles grant read in that
   space's `access` record, or to anyone when the record is `public`.
@@ -148,7 +149,7 @@ managing app. The PDS then asks the host's `checkUserAccess` on every read and w
   - The group writes only in spaces that have an `access` record.
 - **Group spaces are not reconfigured.** `createSpace`, `updateSpace`, `deleteSpace`,
   `clearRecords` and `removeWriter` in `com.atproto.space`, the migration calls (`exportSpaceMeta`,
-  `importSpaceMeta`, `importRepo`), and `putMember` and `removeMember` in
+  `importSpaceMeta`, `importRepo`), and `putMembers` and `removeMembers` in
   `com.atproto.memberspace`, are refused for group spaces, an admin's session included. Only the
   host's own code changes a group space's policy. New spaces come through the group method
   `createSpace`.

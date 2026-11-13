@@ -16,7 +16,7 @@ makes where the proposals are silent, and where it runs into their limits.
 Early and experimental. It runs on test networks, not on the public atproto network.
 
 - It is pinned to one spaces alpha build: the image in the [Dockerfile](Dockerfile),
-  `permissioned-data-alpha` at `11c5d98cd` (2026-10-29). The alpha changes, and the host reaches
+  `permissioned-data-alpha` at `b27a037c7` (the 2026-11-12 release). The alpha changes, and the host reaches
   into parts of the PDS that are not public API, so each move to a newer alpha is checked by hand.
 - It is one process. What it keeps of its own is in memory and in one file under `/data`. It reads
   a group's records on every request, with no caching.
@@ -73,7 +73,7 @@ Of the PDS settings:
 - `PDS_INVITE_REQUIRED=false`: the host makes its groups' accounts itself.
 
 The PDS inside the host resolves the host's own `did:web` over https to find where to call
-`checkUserAccess`, so the host must reach its own public name. snowglobe's group host service, in
+`checkAccess`, so the host must reach its own public name. snowglobe's group host service, in
 its `lib/render.mjs`, is a complete working set of settings.
 
 Health is `GET /xrpc/_health`, as on any PDS.

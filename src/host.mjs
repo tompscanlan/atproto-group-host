@@ -2,19 +2,21 @@
 // account with its own DID, and this host is its PDS. docs/design.md explains the design.
 //
 // Runs inside a container made from the spaces alpha PDS image (bluesky-social/atproto
-// permissioned-data-alpha 11c5d98cd, 2026-10-29), so @atproto/pds is exactly the pinned build.
+// permissioned-data-alpha b27a037c7, the 2026-11-12 release), so @atproto/pds is exactly the pinned
+// build. That image is a pnpm deploy of the PDS service alone: the packages below are read from its
+// store under /app/services/pds/node_modules/.pnpm (the 10-29 image had the monorepo at /app/packages).
 // The sections below, (a) to (h):
 //   (a) the alpha PDS runs as a library through PDS.create, behind an outer express app;
 //   (b) a person signs in through their own PDS and the host signs the browser in as the GROUP
 //       with a one-time ticket fed to the PDS's own sign-in step, never the group's password;
-//   (c) a group space under the managedspace policy calls back to this host's checkUserAccess,
+//   (c) a group space under the managedspace policy calls back to this host's checkAccess,
 //       and what the host answers is what the PDS enforces;
 //   (d) the person's roles come from the group's own records: the host offers only the scopes
 //       those roles grant, records which person authorized each token, and cuts each token's
 //       scopes on every request to what that person's roles grant now;
 //   (e) prompt=create makes a group: the account, its meta and members spaces, and their records,
 //       with the creator's own recovery key first among the DID's rotation keys, shown once;
-//   (f) the host enforces from those records: checkUserAccess answers from `access` and the
+//   (f) the host enforces from those records: checkAccess answers from `access` and the
 //       person's roles, group writes pass the record rules and the writer's `assignable` roles
 //       before the PDS takes them, nobody grants more than they hold, writes to a space with no
 //       `access` record are refused, and nobody reconfigures, wipes or migrates a group space;
@@ -29,14 +31,14 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
-import { PDS, envToCfg, envToSecrets, readEnv } from '/app/packages/pds/dist/index.js'
-import { verifyJwt } from '/app/packages/xrpc-server/dist/auth.js'
-import { reservedSubdomains } from '/app/packages/pds/dist/handle/reserved.js'
-import { hasExplicitSlur } from '/app/packages/pds/dist/handle/explicit-slurs.js'
-import { AUTHORIZATION_INACTIVITY_TIMEOUT } from '/app/packages/oauth/oauth-provider/dist/oauth-constants.js'
-import { BlobPermission, RepoPermission, SpacePermission, isAtprotoOauthScope } from '/app/packages/oauth/oauth-scopes/dist/index.js'
-import { TID } from '/app/packages/common-web/dist/index.js'
-import { SpaceRef, isValidDid, isValidNsid, isValidRecordKey } from '/app/packages/syntax/dist/index.js'
+import { PDS, envToCfg, envToSecrets, readEnv } from '/app/services/pds/node_modules/.pnpm/@atproto+pds@file++++app+packages+pds/node_modules/@atproto/pds/dist/index.js'
+import { verifyJwt } from '/app/services/pds/node_modules/.pnpm/@atproto+xrpc-server@file++++app+packages+xrpc-server/node_modules/@atproto/xrpc-server/dist/auth.js'
+import { reservedSubdomains } from '/app/services/pds/node_modules/.pnpm/@atproto+pds@file++++app+packages+pds/node_modules/@atproto/pds/dist/handle/reserved.js'
+import { hasExplicitSlur } from '/app/services/pds/node_modules/.pnpm/@atproto+pds@file++++app+packages+pds/node_modules/@atproto/pds/dist/handle/explicit-slurs.js'
+import { AUTHORIZATION_INACTIVITY_TIMEOUT } from '/app/services/pds/node_modules/.pnpm/@atproto+oauth-provider@file++++app+packages+oauth+oauth-provider/node_modules/@atproto/oauth-provider/dist/oauth-constants.js'
+import { BlobPermission, RepoPermission, SpacePermission, isAtprotoOauthScope } from '/app/services/pds/node_modules/.pnpm/@atproto+oauth-scopes@file++++app+packages+oauth+oauth-scopes/node_modules/@atproto/oauth-scopes/dist/index.js'
+import { TID } from '/app/services/pds/node_modules/.pnpm/@atproto+common-web@file++++app+packages+common-web/node_modules/@atproto/common-web/dist/index.js'
+import { SpaceRef, isValidDid, isValidNsid, isValidRecordKey } from '/app/services/pds/node_modules/.pnpm/@atproto+syntax@file++++app+packages+syntax/node_modules/@atproto/syntax/dist/index.js'
 import { Secp256k1PrivateKeyExportable } from '@atcute/crypto'
 import { OAuthClient, OAuthCallbackError, MemoryStore } from '@atcute/oauth-node-client'
 import {
@@ -47,13 +49,13 @@ import {
   WellKnownHandleResolver,
 } from '@atcute/identity-resolver'
 
-const require = createRequire('/app/packages/pds/package.json')
+const require = createRequire('/app/services/pds/node_modules/.pnpm/@atproto+pds@file++++app+packages+pds/node_modules/@atproto/pds/package.json')
 const express = require('express')
 
 const PUBLIC_URL = process.env.HOST_PUBLIC_URL // https://gh.example.com
 const HOST_DID = `did:web:${new URL(PUBLIC_URL).host}`
 const MANAGING_APP = `${HOST_DID}#group_host`
-// Every group space is made under this policy, so the PDS asks the host (checkUserAccess) who may
+// Every group space is made under this policy, so the PDS asks the host (checkAccess) who may
 // read and write it.
 const MA = { $type: 'com.atproto.managedspace.policy', managingApp: MANAGING_APP }
 const LOOPBACK = process.env.HOST_LOOPBACK_URL // http://127.0.0.1:7070, how the host calls its own PDS
@@ -75,7 +77,7 @@ const consent = new Map() // requestUri -> what the host's consent page shows
 const requestPerson = new Map() // OAuth request id -> person DID, set when the ticket is minted
 const codePerson = new Map() // authorization code -> person DID, set when the request is authorized
 const authorizedBy = [] // { groupDid, personDid, at }: which person each group sign-in stands for
-const accessCalls = [] // every checkUserAccess the PDS made (capped)
+const accessCalls = [] // every checkAccess the PDS made, one entry per kind (read, write) (capped)
 const narrowings = [] // every per-request cut, newest last (capped)
 const refusals = [] // every write, space change or group sign-in the host refused, by its gate (no `by`), its PDS or its sign-in (capped)
 
@@ -112,9 +114,10 @@ store.authenticateAccount = async (data) => {
     const id = data.password.slice('ticket:'.length)
     const t = tickets.get(id)
     tickets.delete(id) // single use, whatever happens next
-    const groupDid = data.username.startsWith('did:')
-      ? data.username
-      : await pds.ctx.accountManager.getAccount(data.username).then((a) => a?.did)
+    // 11/12: the sign-in step's `identifier` (10-29 called it `username`).
+    const groupDid = data.identifier.startsWith('did:')
+      ? data.identifier
+      : await pds.ctx.accountManager.getAccount(data.identifier).then((a) => a?.did)
     if (!t || t.exp < Date.now() || t.groupDid !== groupDid) {
       log('ticket sign-in REFUSED', { known: !!t, groupMatches: t?.groupDid === groupDid })
       const { InvalidRequestError } = require('@atproto/oauth-provider')
@@ -157,7 +160,7 @@ async function readGroup(groupDid) {
 function pinToSpace(scope, space, groupDid) {
   const sp = SpacePermission.fromString(scope)
   if (!sp) return null // only space: scopes mean anything in an access record
-  if (sp.type !== '*' && sp.type !== space.type) return null
+  if (sp.spaceType !== '*' && sp.spaceType !== space.type) return null // 11/12: spaceType (10-29: type)
   if (sp.authority !== '*' && sp.authority !== groupDid) return null
   if (sp.skey !== '*' && sp.skey !== space.skey) return null
   return new SpacePermission(space.type, groupDid, space.skey, sp.collection, sp.action, sp.manage).toString()
@@ -228,7 +231,7 @@ function covered(item, grants) {
   if (bp) return bp.accept.every((asked) => grants.blobs.some((g) => g.accept.some((granted) => acceptCovers(granted, asked))))
   const sp = SpacePermission.fromString(item)
   if (!sp) return grants.strings.has(item)
-  const ref = { type: sp.type, authority: sp.authority, skey: sp.skey }
+  const ref = { spaceType: sp.spaceType, authority: sp.authority, skey: sp.skey } // 11/12 field names
   const ops = []
   for (const action of sp.action) {
     if (action === 'read' || action === 'read_self') ops.push({ ...ref, action })
@@ -608,7 +611,7 @@ outer.use((req, res, next) => {
 // The sign-in client's metadata, which a person's own PDS fetches to learn who is asking.
 outer.get('/signin/client-metadata.json', (req, res) => res.json(personClient.metadata))
 
-// did:web for the host itself, naming the endpoint the PDS calls for checkUserAccess.
+// did:web for the host itself, naming the endpoint the PDS calls for checkAccess.
 outer.get('/.well-known/did.json', (req, res) => {
   res.json({
     '@context': ['https://www.w3.org/ns/did/v1'],
@@ -855,7 +858,7 @@ ${c.dropped.length ? `<p>Not offered, because your roles do not grant it:</p><ul
     headers: { 'content-type': 'application/json', 'x-csrf-token': csrf, ...(bearer ? { authorization: 'Bearer ' + bearer } : {}) },
     body: JSON.stringify(body),
   })
-  const r = await api('sign-in', { locale: 'en', username: group, password: 'ticket:' + ticket, remember: false })
+  const r = await api('sign-in', { locale: 'en', identifier: group, password: 'ticket:' + ticket, remember: false })
   if (!r.ok) { document.getElementById('s').textContent = 'sign-in ' + r.status; return }
   const { ephemeralToken } = await r.json()
   document.getElementById('s').hidden = true
@@ -915,9 +918,11 @@ async function decideAccess(spaceUri, user, kind) {
   const acc = g.access.find((a) => a.space.uri === spaceUri)
   if (!acc) return { authorized: false, why: 'no access record' }
   if (kind === 'read' && acc.value.public === true) return { authorized: true, why: 'public' }
+  // The 11/12 PDS asks with no repo for a read that carries no delegation token: only public reads.
+  if (!user) return { authorized: false, why: 'no account' }
   const grants = await grantsFor(authority, user)
   const s = acc.space
-  const reads = (grants.bySpace.get(spaceUri) ?? []).some((p) => p.matches({ type: s.type, authority, skey: s.skey, action: 'read' }))
+  const reads = (grants.bySpace.get(spaceUri) ?? []).some((p) => p.matches({ spaceType: s.type, authority, skey: s.skey, action: 'read' }))
   return { authorized: reads, why: reads ? `roles ${grants.roles.join(',')} grant read` : grants.roles.length ? `roles ${grants.roles.join(',')} do not grant read` : 'no roles' }
 }
 
@@ -1156,8 +1161,10 @@ const SPACE_CHANGES = [
   'com.atproto.space.deleteSpace',
   'com.atproto.space.clearRecords',
   'com.atproto.space.removeWriter',
-  'com.atproto.memberspace.putMember',
-  'com.atproto.memberspace.removeMember',
+  // The 11/12 names (putMember and removeMember before it). A group space is a managedspace, whose
+  // PDS refuses member lists anyway; the guard names them so that holds whatever the PDS does.
+  'com.atproto.memberspace.putMembers',
+  'com.atproto.memberspace.removeMembers',
 ]
 // The imports carry an archive, not JSON, and act on the caller's own account.
 const SPACE_IMPORTS = ['com.atproto.space.importSpaceMeta', 'com.atproto.space.importRepo']
@@ -1193,29 +1200,38 @@ outer.get(
   spaceGuard((req, caller) => (req.query.space ? parseSpace(String(req.query.space)).authority : caller.sub)),
 )
 
-// ---- (c) checkUserAccess: the managing app's answer, from the records ----
-outer.get('/xrpc/com.atproto.managedspace.checkUserAccess', async (req, res) => {
-  const { space, user, access: kind, clientId } = req.query
+// ---- (c) checkAccess: the managing app's answer, from the records ----
+// The 11/12 PDS asks once for both kinds: { space, repo?, clientId? } -> { read, write } (10-29 asked
+// checkUserAccess once per kind). `repo` is absent for a read with no delegation token, `clientId`
+// for a write. Each kind is decided as before and logged as its own entry, in the 10-29 shape.
+const recordAccess = (entry) => {
+  accessCalls.push({ ...entry, at: new Date().toISOString() })
+  if (accessCalls.length > 50) accessCalls.shift()
+}
+outer.get('/xrpc/com.atproto.managedspace.checkAccess', async (req, res) => {
+  const { space, repo, clientId } = req.query
+  const user = repo ? String(repo) : null
   let iss = null
   try {
     const jwt = (req.headers.authorization || '').replace(/^Bearer /, '')
-    const payload = await verifyJwt(jwt, MANAGING_APP, 'com.atproto.managedspace.checkUserAccess', (did, force) =>
+    const payload = await verifyJwt(jwt, MANAGING_APP, 'com.atproto.managedspace.checkAccess', (did, force) =>
       pds.ctx.idResolver.did.resolveAtprotoKey(did, force),
     )
     iss = payload.iss
   } catch (err) {
-    accessCalls.push({ space, user, kind, iss: null, error: err.message })
-    if (accessCalls.length > 50) accessCalls.shift()
-    log('checkUserAccess: bad service auth', err.message)
+    recordAccess({ space, user, kind: 'read,write', iss: null, error: err.message })
+    log('checkAccess: bad service auth', err.message)
     return res.status(401).json({ error: 'AuthRequired', message: err.message })
   }
   // The caller must be the space's own authority.
-  let decision = { authorized: false, why: 'caller is not the space authority' }
-  if (iss === parseSpace(space).authority) decision = await decideAccess(String(space), String(user), String(kind))
-  accessCalls.push({ space, user, kind, clientId: clientId ?? null, iss, ...decision, at: new Date().toISOString() })
-  if (accessCalls.length > 50) accessCalls.shift()
-  log('checkUserAccess', { space, user, kind, ...decision })
-  res.json({ authorized: decision.authorized })
+  const notAuthority = { authorized: false, why: 'caller is not the space authority' }
+  const decided = {}
+  for (const kind of ['read', 'write']) {
+    decided[kind] = iss === parseSpace(space).authority ? await decideAccess(String(space), user, kind) : notAuthority
+    recordAccess({ space, user, kind, clientId: clientId ?? null, iss, ...decided[kind] })
+  }
+  log('checkAccess', { space, user, read: decided.read.authorized, write: decided.write.authorized, why: decided.read.why })
+  res.json({ read: decided.read.authorized, write: decided.write.authorized })
 })
 
 // ---- (g) a person's own acts, with service auth from their own PDS ----
@@ -1443,7 +1459,7 @@ groupMethod(
     // group.opensocial.access allows at most one grant per role.
     if (new Set(grants.map((g) => g.role)).size !== grants.length) throw new Refusal(400, 'InvalidRequest', 'at most one grant per role')
     const ref = new SpaceRef(group, type, skey)
-    credentials.permissions?.assertSpaceRef(ref, { manage: 'create' }) // a password session is the group itself
+    credentials.permissions?.assertSpace(ref, { manage: 'create' }) // a password session is the group itself; 11/12 name (assertSpaceRef before)
     if (type === META || type === MEMBERS) throw new Refusal(400, 'ReservedSpace', `the ${type} space is made with the group`)
     const g = await readGroup(group)
     const declared = new Set(g.roles.map((r) => r.rkey))
@@ -1457,7 +1473,8 @@ groupMethod(
     }
     const space = ref.toString()
     // The PDS's own check for an existing space (a deleted one included): SpaceAlreadyExists.
-    await pds.ctx.spacePolicyManager.createSpace(space, MA)
+    // 11/12 takes the SpaceRef (10-29 took its string). A new space has no syncers to notify yet.
+    await pds.ctx.spacePolicyManager.createSpace(ref, MA)
     const jwt = await groupJwt(group)
     const record = { $type: `${NS}.access`, ...(access.public === undefined ? {} : { public: access.public }), grants: grants.map(({ role, scopes }) => ({ role, scopes })) }
     const accessRef = await xrpc('com.atproto.space.createRecord', { space, repo: group, collection: `${NS}.access`, rkey: 'self', record }, jwt)
