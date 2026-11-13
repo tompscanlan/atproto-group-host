@@ -369,20 +369,28 @@ export async function sigHeaders(key, authorization, audience) {
     signature: `atproto-space-credential=:${b64(signature)}:`,
   }
 }
-// A person's space credential: a delegation token from their own PDS, traded at the space host.
+// A person's space credential: a delegation token from their own PDS, traded at the space host
+// (11/12: authorizeSpaceSync with credentialKey; 10-29: getSpaceCredential with credentialKid).
 export async function credentialFor(own, space) {
   const d = await asOwn(own, 'GET', 'com.atproto.space.getDelegationToken', { params: { space } })
   if (d.status !== 200) return { status: d.status, body: d.body }
   const key = await p256()
-  const r = await call(`${own.who} delegation token`, HOST, 'POST', 'com.atproto.space.getSpaceCredential', {
-    body: { space, credentialKid: key.keyId, delegationToken: d.body.token },
+  const r = await call(`${own.who} delegation token`, HOST, 'POST', 'com.atproto.space.authorizeSpaceSync', {
+    body: { space, credentialKey: key.keyId, delegationToken: d.body.token },
   })
   return { status: r.status, body: r.body, cred: r.status === 200 ? { token: r.body.credential, key } : null }
 }
+// The space's writers (11/12 listWriters: a log of #repoWrite and #repoRemoved entries, oldest
+// first; 10-29 listRepos listed the current writers).
 export async function listWriters(cred, space, authority) {
-  const lr = await call('space credential', HOST, 'GET', 'com.atproto.space.listRepos', {
+  const lr = await call('space credential', HOST, 'GET', 'com.atproto.space.listWriters', {
     params: { space },
     headers: await sigHeaders(cred.key, `Atproto-Space-Credential ${cred.token}`, authority),
   })
-  return (lr.body?.repos ?? []).map((r) => r.did)
+  const writers = new Set()
+  for (const e of lr.body?.repos ?? []) {
+    if (String(e.$type).endsWith('#repoWrite')) writers.add(e.repo)
+    else writers.delete(e.repo)
+  }
+  return [...writers]
 }

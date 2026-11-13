@@ -208,9 +208,9 @@ const OPEN = { $type: 'com.atproto.memberspace.policy', publicRead: true, public
 const ss = [
   ['createSpace', await asA('POST', 'com.atproto.space.createSpace', { spaceType: META, skey: 'e7', policy: OPEN })],
   ['updateSpace', await asA('POST', 'com.atproto.space.updateSpace', { space: MEM, policy: OPEN })],
-  ['putMember', await asA('POST', 'com.atproto.memberspace.putMember', { space: MEM, did: bob.did, read: true, write: true })],
+  ['putMembers', await asA('POST', 'com.atproto.memberspace.putMembers', { space: MEM, members: [{ did: bob.did, read: true, write: true }] })],
   ['clearRecords', await asA('POST', 'com.atproto.space.clearRecords', { space: MEM, repo: G })],
-  ['removeWriter', await asA('POST', 'com.atproto.space.removeWriter', { space: MEM, did: G })],
+  ['removeWriter', await asA('POST', 'com.atproto.space.removeWriter', { space: MEM, repo: G })],
   ['exportSpaceMeta', await as(A.session, 'alice for the group', 'GET', 'com.atproto.space.exportSpaceMeta', { params: { space: MEM } })],
   ['importSpaceMeta', await asA('POST', 'com.atproto.space.importSpaceMeta', {})],
   ['deleteSpace', await asA('POST', 'com.atproto.space.deleteSpace', { space: MEM })],

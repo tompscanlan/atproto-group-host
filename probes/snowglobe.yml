@@ -10,7 +10,7 @@ globe: ghprobes
 pds:
   # The same spaces alpha build the host runs on.
   - name: alpha
-    image: ghcr.io/bluesky-social/atproto@sha256:f003adf7ca7cbb8ff60a4d99323fd009dfc1259b208f468f71accf0366ecab1e
+    image: ghcr.io/bluesky-social/atproto@sha256:1b3113b40eac2581b8f928bcec8840c8a0912c3a3d90bf3b965a775f8a97067a
     bare_handles: true
 
 grouphosts:
